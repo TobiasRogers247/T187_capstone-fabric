@@ -70,6 +70,7 @@ services:
       - CORE_METRICS_PROVIDER=prometheus
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
     volumes:
+      - ${HOME}/hyperledger/fabric-samples/config:/etc/hyperledger/peercfg
       - ../../organizations/peerOrganizations/platform.capstone.local/peers/peer0.platform.capstone.local:/etc/hyperledger/fabric
       - ../../runtime/ledgers/peer0-platform:/var/hyperledger/production
     working_dir: /root
@@ -106,6 +107,7 @@ services:
       - CORE_METRICS_PROVIDER=prometheus
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
     volumes:
+      - ${HOME}/hyperledger/fabric-samples/config:/etc/hyperledger/peercfg
       - ../../organizations/peerOrganizations/audit.capstone.local/peers/peer0.audit.capstone.local:/etc/hyperledger/fabric
       - ../../runtime/ledgers/peer0-audit:/var/hyperledger/production
     working_dir: /root
