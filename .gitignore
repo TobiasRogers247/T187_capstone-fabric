@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+AGENTS.md
 
 # Hyperledger Fabric generated crypto and MSP material
 organizations/
@@ -18,6 +19,7 @@ fabric-ca-client/
 data/
 docker-volumes/
 .fabric-state/
+runtime/
 
 # Logs and temp files
 *.log
@@ -27,4 +29,3 @@ temp/
 # OS/editor noise
 .DS_Store
 Thumbs.db
-

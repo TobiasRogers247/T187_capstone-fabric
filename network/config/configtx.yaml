@@ -1,0 +1,147 @@
+Organizations:
+  - &OrdererOrg
+    Name: OrdererOrgMSP
+    ID: OrdererOrgMSP
+    MSPDir: ../../organizations/ordererOrganizations/capstone.local/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('OrdererOrgMSP.member')"
+      Writers:
+        Type: Signature
+        Rule: "OR('OrdererOrgMSP.member')"
+      Admins:
+        Type: Signature
+        Rule: "OR('OrdererOrgMSP.admin')"
+    OrdererEndpoints:
+      - orderer0.capstone.local:7050
+
+  - &PlatformOrg
+    Name: PlatformOrgMSP
+    ID: PlatformOrgMSP
+    MSPDir: ../../organizations/peerOrganizations/platform.capstone.local/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('PlatformOrgMSP.admin', 'PlatformOrgMSP.peer', 'PlatformOrgMSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('PlatformOrgMSP.admin', 'PlatformOrgMSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('PlatformOrgMSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('PlatformOrgMSP.peer')"
+    AnchorPeers:
+      - Host: peer0.platform.capstone.local
+        Port: 7051
+
+  - &AuditOrg
+    Name: AuditOrgMSP
+    ID: AuditOrgMSP
+    MSPDir: ../../organizations/peerOrganizations/audit.capstone.local/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('AuditOrgMSP.admin', 'AuditOrgMSP.peer', 'AuditOrgMSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('AuditOrgMSP.admin', 'AuditOrgMSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('AuditOrgMSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('AuditOrgMSP.peer')"
+    AnchorPeers:
+      - Host: peer0.audit.capstone.local
+        Port: 8051
+
+Capabilities:
+  Channel: &ChannelCapabilities
+    V2_0: true
+  Orderer: &OrdererCapabilities
+    V2_0: true
+  Application: &ApplicationCapabilities
+    V2_5: true
+
+Application: &ApplicationDefaults
+  Organizations:
+  Policies:
+    Readers:
+      Type: ImplicitMeta
+      Rule: "ANY Readers"
+    Writers:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+    Admins:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Admins"
+    LifecycleEndorsement:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Endorsement"
+    Endorsement:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Endorsement"
+  Capabilities:
+    <<: *ApplicationCapabilities
+
+Orderer: &OrdererDefaults
+  Addresses:
+    - orderer0.capstone.local:7050
+  OrdererType: etcdraft
+  EtcdRaft:
+    Consenters:
+      - Host: orderer0.capstone.local
+        Port: 7050
+        ClientTLSCert: ../../organizations/ordererOrganizations/capstone.local/orderers/orderer0.capstone.local/tls/server.crt
+        ServerTLSCert: ../../organizations/ordererOrganizations/capstone.local/orderers/orderer0.capstone.local/tls/server.crt
+  BatchTimeout: 2s
+  BatchSize:
+    MaxMessageCount: 10
+    AbsoluteMaxBytes: 99 MB
+    PreferredMaxBytes: 512 KB
+  Organizations:
+  Policies:
+    Readers:
+      Type: ImplicitMeta
+      Rule: "ANY Readers"
+    Writers:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+    Admins:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Admins"
+    BlockValidation:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+  Capabilities:
+    <<: *OrdererCapabilities
+
+Channel: &ChannelDefaults
+  Policies:
+    Readers:
+      Type: ImplicitMeta
+      Rule: "ANY Readers"
+    Writers:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+    Admins:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Admins"
+  Capabilities:
+    <<: *ChannelCapabilities
+
+Profiles:
+  EnergyChannelUsingRaft:
+    <<: *ChannelDefaults
+    Orderer:
+      <<: *OrdererDefaults
+      Organizations:
+        - *OrdererOrg
+    Application:
+      <<: *ApplicationDefaults
+      Organizations:
+        - *PlatformOrg
+        - *AuditOrg
