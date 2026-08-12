@@ -33,11 +33,11 @@ It already includes:
 - environment defaults in `.env.example`
 - CA and network Docker Compose definitions
 - channel topology in `network/config/configtx.yaml`
+- backend-first Platform bootstrap scripts in `network/scripts/`
 - setup documentation in `docs/`
 
 It does not yet include a complete bootstrap flow for:
 
-- enrollment and registration scripts
 - generated MSP and TLS material
 - generated channel artifacts
 - committed chaincode source
@@ -73,4 +73,4 @@ It does not yet include a complete bootstrap flow for:
 
 ## Next Step
 
-Solidify the Ubuntu-side Fabric bootstrap flow by adding the missing registration, enrollment, and channel startup scripts under `network/scripts/`. After that, this repository can become the single source of truth for standing up the runtime network on Ubuntu.
+Use `network/scripts/registerEnroll-platform.sh` to generate the minimum Platform org material for a backend health check, then start `peer0.platform.capstone.local` and run `network/scripts/exportBackendEnv.sh` to print the backend env block. The full multi-org bootstrap flow is still the next milestone after that.
