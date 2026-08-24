@@ -25,6 +25,8 @@ runtime/
 *.log
 tmp/
 temp/
+node_modules/
+chaincode/**/dist/
 
 # OS/editor noise
 .DS_Store

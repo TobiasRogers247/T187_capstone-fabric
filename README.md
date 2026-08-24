@@ -33,6 +33,7 @@ It already includes:
 - environment defaults in `.env.example`
 - CA and network Docker Compose definitions
 - channel topology in `network/config/configtx.yaml`
+- initial TypeScript chaincode in `chaincode/energy-market`
 - backend-first Platform bootstrap scripts in `network/scripts/`
 - setup documentation in `docs/`
 
@@ -40,7 +41,6 @@ It does not yet include a complete bootstrap flow for:
 
 - generated MSP and TLS material
 - generated channel artifacts
-- committed chaincode source
 - gateway connection assets for the application
 
 ## Commit These
@@ -74,3 +74,7 @@ It does not yet include a complete bootstrap flow for:
 ## Next Step
 
 Use `network/scripts/registerEnroll-platform.sh` to generate the minimum Platform org material for a backend health check, then start `peer0.platform.capstone.local` and run `network/scripts/exportBackendEnv.sh` to print the backend env block. The full multi-org bootstrap flow is still the next milestone after that.
+
+After that bootstrap is in place, you can register a normal Platform user identity with `bash network/scripts/registerUser-platform.sh <enrollment-id> <secret>`.
+
+To revoke a Platform user identity in Fabric CA, use `bash network/scripts/revokeUser-platform.sh <enrollment-id> [reason]`.
