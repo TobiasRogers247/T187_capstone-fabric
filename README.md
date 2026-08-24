@@ -73,7 +73,7 @@ It does not yet include a complete bootstrap flow for:
 
 ## Next Step
 
-Use `network/scripts/registerEnroll-platform.sh` to generate the minimum Platform org material for a backend health check, then start `peer0.platform.capstone.local` and run `network/scripts/exportBackendEnv.sh` to print the backend env block. The full multi-org bootstrap flow is still the next milestone after that.
+Use `network/scripts/registerEnroll-platform.sh` to generate the minimum Platform org material for a backend health check, then start `peer0.platform.capstone.local` and run `network/scripts/exportBackendEnv.sh` to print the backend env block. The export script reads the backend endpoint values from `.env`, so shared VM setups can override `BACKEND_FABRIC_PEER_ENDPOINT`, `BACKEND_FABRIC_CA_URL`, and `BACKEND_FABRIC_CA_AFFILIATION` there. The full multi-org bootstrap flow is still the next milestone after that.
 
 After that bootstrap is in place, you can register a normal Platform user identity with `bash network/scripts/registerUser-platform.sh <enrollment-id> <secret>`.
 
