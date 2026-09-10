@@ -202,7 +202,7 @@ export class EnergyMarketContract extends Contract {
           result.value.value.toString(),
         ) as EnergyListing;
 
-        if (listing.status === "active" && listing.remainingKwh > 0) {
+        if (listing.status === "active") {
           listings.push(listing);
         }
       }

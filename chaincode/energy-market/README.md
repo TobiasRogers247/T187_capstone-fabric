@@ -96,9 +96,8 @@ await fabricClient.evaluateTransaction("ReadListing", listingId);
 ### GetActiveListings
 
 Evaluate the current active marketplace offers. It returns an array of listings
-with `status: "active"` and `remainingKwh > 0`; cancelled, sold, expired, and
-fully consumed listings are excluded. This is the ledger-authoritative source for
-the frontend marketplace listing view.
+with `status: "active"`; cancelled, sold, and expired listings are excluded. This
+is the ledger-authoritative source for the frontend marketplace listing view.
 
 ```ts
 await fabricClient.evaluateTransaction("GetActiveListings");

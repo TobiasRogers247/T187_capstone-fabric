@@ -134,26 +134,12 @@ test("rejects duplicate listing IDs", async () => {
   );
 });
 
-test("returns only listings that are active and have available energy", async () => {
+test("returns only active listings", async () => {
   const contract = new EnergyMarketContract();
   const ctx = createContext();
   await createListing(contract, ctx, "listing-002");
   await createListing(contract, ctx, "listing-001");
   await contract.CancelListing(ctx, "listing-001", "seller-001");
-
-  const zeroBalanceKey = ctx.stub.createCompositeKey("energyListing", [
-    "listing-003",
-  ]);
-  ctx.stub.state.set(
-    zeroBalanceKey,
-    Buffer.from(
-      JSON.stringify({
-        listingId: "listing-003",
-        status: "active",
-        remainingKwh: 0,
-      }),
-    ),
-  );
 
   const listings = JSON.parse(await contract.GetActiveListings(ctx));
 
