@@ -181,6 +181,38 @@ export class EnergyMarketContract extends Contract {
     return JSON.stringify(listing);
   }
 
+  @Transaction(false)
+  @Returns("string")
+  public async GetActiveListings(ctx: Context): Promise<string> {
+    const iterator = await ctx.stub.getStateByPartialCompositeKey(
+      "energyListing",
+      [],
+    );
+    const listings: EnergyListing[] = [];
+
+    try {
+      while (true) {
+        const result = await iterator.next();
+
+        if (result.done) {
+          break;
+        }
+
+        const listing = JSON.parse(
+          result.value.value.toString(),
+        ) as EnergyListing;
+
+        if (listing.status === "active" && listing.remainingKwh > 0) {
+          listings.push(listing);
+        }
+      }
+    } finally {
+      await iterator.close();
+    }
+
+    return JSON.stringify(listings);
+  }
+
   @Transaction()
   @Returns("string")
   public async CancelListing(

@@ -79,6 +79,16 @@ class MockStub {
   async getHistoryForKey(key) {
     return new MockHistoryIterator(this.history.get(key) ?? []);
   }
+
+  async getStateByPartialCompositeKey(objectType) {
+    const keyPrefix = `\u0000${objectType}\u0000`;
+    const entries = [...this.state.entries()]
+      .filter(([key]) => key.startsWith(keyPrefix))
+      .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
+      .map(([key, value]) => ({ key, value }));
+
+    return new MockHistoryIterator(entries);
+  }
 }
 
 function createContext() {
@@ -122,6 +132,35 @@ test("rejects duplicate listing IDs", async () => {
     () => createListing(contract, ctx),
     /Listing listing-001 already exists/,
   );
+});
+
+test("returns only listings that are active and have available energy", async () => {
+  const contract = new EnergyMarketContract();
+  const ctx = createContext();
+  await createListing(contract, ctx, "listing-002");
+  await createListing(contract, ctx, "listing-001");
+  await contract.CancelListing(ctx, "listing-001", "seller-001");
+
+  const zeroBalanceKey = ctx.stub.createCompositeKey("energyListing", [
+    "listing-003",
+  ]);
+  ctx.stub.state.set(
+    zeroBalanceKey,
+    Buffer.from(
+      JSON.stringify({
+        listingId: "listing-003",
+        status: "active",
+        remainingKwh: 0,
+      }),
+    ),
+  );
+
+  const listings = JSON.parse(await contract.GetActiveListings(ctx));
+
+  assert.equal(listings.length, 1);
+  assert.equal(listings[0].listingId, "listing-002");
+  assert.equal(listings[0].status, "active");
+  assert.equal(listings[0].remainingKwh, 1.5);
 });
 
 test("rejects invalid listing arguments", async () => {
