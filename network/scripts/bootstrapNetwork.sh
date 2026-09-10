@@ -11,6 +11,14 @@ configure_peer_cli
 
 cd "${ROOT_DIR}"
 
+# Create bind-mount roots as the invoking user before Docker starts the CA
+# containers. Otherwise Docker creates a root-owned organizations directory and
+# the subsequent enrollment scripts cannot create MSP directories beneath it.
+mkdir -p \
+  "${ROOT_DIR}/organizations/fabric-ca/platform" \
+  "${ROOT_DIR}/organizations/fabric-ca/audit" \
+  "${ROOT_DIR}/organizations/fabric-ca/ordererOrg"
+
 docker compose --env-file .env \
   -f network/compose/compose-ca.yaml \
   -f network/compose/compose-net.yaml \
