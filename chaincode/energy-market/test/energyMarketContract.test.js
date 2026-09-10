@@ -113,17 +113,19 @@ test("creates and reads an active whole-energy listing", async () => {
   assert.equal("updatedAt" in created, false);
 });
 
-test("returns only active listings", async () => {
+test("returns listings filtered by Fabric status", async () => {
   const contract = new EnergyMarketContract();
   const ctx = createContext();
   await createListing(contract, ctx, "listing-002");
   await createListing(contract, ctx, "listing-001");
   await contract.CancelListing(ctx, "listing-001", "seller-001");
 
-  const listings = JSON.parse(await contract.GetActiveListings(ctx));
+  const listings = JSON.parse(await contract.ReadListings(ctx, "active"));
+  const allListings = JSON.parse(await contract.ReadListings(ctx, "all"));
 
   assert.equal(listings.length, 1);
   assert.equal(listings[0].listingId, "listing-002");
+  assert.equal(allListings.length, 2);
 });
 
 test("settles an active listing atomically after the backend handshake", async () => {
@@ -204,6 +206,10 @@ test("rejects invalid listing arguments and invalid state transitions", async ()
   await assert.rejects(
     () => contract.CompletePurchaseHandshake(ctx, "listing-001", "buyer-001"),
     /must be active; it is cancelled/,
+  );
+  await assert.rejects(
+    () => contract.ReadListings(ctx, "pending"),
+    /status must be active, cancelled, sold, or all/,
   );
 });
 

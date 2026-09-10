@@ -8,6 +8,7 @@ import {
 
 type UserStatus = "ACTIVE" | "INACTIVE";
 type ListingStatus = "active" | "cancelled" | "sold";
+type ListingQueryStatus = ListingStatus | "all";
 
 interface EnergyListing {
   docType: "energyListing";
@@ -180,7 +181,8 @@ export class EnergyMarketContract extends Contract {
 
   @Transaction(false)
   @Returns("string")
-  public async GetActiveListings(ctx: Context): Promise<string> {
+  public async ReadListings(ctx: Context, status: string): Promise<string> {
+    const queryStatus = this.parseListingQueryStatus(status);
     const iterator = await ctx.stub.getStateByPartialCompositeKey(
       "energyListing",
       [],
@@ -199,7 +201,7 @@ export class EnergyMarketContract extends Contract {
           result.value.value.toString(),
         ) as EnergyListing;
 
-        if (listing.status === "active") {
+        if (queryStatus === "all" || listing.status === queryStatus) {
           listings.push(listing);
         }
       }
@@ -456,6 +458,21 @@ export class EnergyMarketContract extends Contract {
     }
 
     return parsedValue;
+  }
+
+  private parseListingQueryStatus(value: string): ListingQueryStatus {
+    this.requireNonEmpty("status", value);
+
+    if (
+      value !== "active" &&
+      value !== "cancelled" &&
+      value !== "sold" &&
+      value !== "all"
+    ) {
+      throw new Error("status must be active, cancelled, sold, or all");
+    }
+
+    return value;
   }
 
   private getTimestampIso(ctx: Context): string {

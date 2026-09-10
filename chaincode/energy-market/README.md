@@ -37,7 +37,7 @@ on-chain pending state.
 
 - `CreateListing(listingId, userId, assetId, energyKWh, priceTokensPerKWh)`
 - `ReadListing(listingId)`
-- `GetActiveListings()`
+- `ReadListings(status)` where `status` is `active`, `cancelled`, `sold`, or `all`
 - `CancelListing(listingId, userId)`
 - `CompletePurchaseHandshake(listingId, buyerId)`
 - `ReadTransaction(transactionId)`
@@ -45,6 +45,10 @@ on-chain pending state.
 
 `energyKWh` is a positive decimal string when submitted. `priceTokensPerKWh` is a
 positive integer string and must be within JavaScript's safe integer range.
+
+`ReadListing` returns one Fabric listing by ID. `ReadListings` returns the current
+Fabric listings filtered by the requested status; it does not accept `pending`
+because that handshake state remains in MongoDB.
 
 The backend owns the handshake protocol and authorization because it signs through
 the shared backend service Fabric identity. Fabric receives no handshake or buyer
