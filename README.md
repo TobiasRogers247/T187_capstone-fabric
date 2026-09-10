@@ -98,6 +98,9 @@ Then run:
 bash network/scripts/deployChaincode.sh
 ```
 
+The target sequence must be greater than the committed sequence. The deployment
+script permits upgrades and rejects a target sequence that is unchanged or lower.
+
 `git pull` updates source only. It does not create a channel or deploy chaincode.
 Run the lifecycle script after pulling an approved chaincode change.
 

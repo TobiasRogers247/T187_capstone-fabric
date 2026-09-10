@@ -25,11 +25,26 @@ require_file "${ORDERER_TLS_CA}"
 require_file "${CHAINCODE_PATH}/package.json"
 mkdir -p "${ROOT_DIR}/channel-artifacts"
 
-if set_platform_peer_context && peer lifecycle chaincode querycommitted \
-  --channelID "${CHANNEL_NAME}" \
-  --name "${CHAINCODE_NAME}" >/dev/null 2>&1; then
-  echo "${CHAINCODE_NAME} is already committed on ${CHANNEL_NAME}." >&2
-  echo "Set FABRIC_CHAINCODE_VERSION and FABRIC_CHAINCODE_SEQUENCE for an approved upgrade." >&2
+set_platform_peer_context
+committed_definition="$(
+  peer lifecycle chaincode querycommitted \
+    --channelID "${CHANNEL_NAME}" \
+    --name "${CHAINCODE_NAME}" 2>/dev/null || true
+)"
+committed_sequence="$(
+  sed -n 's/.*Sequence: \([0-9][0-9]*\).*/\1/p' <<<"${committed_definition}" \
+    | head -n 1
+)"
+
+if [[ -n "${committed_definition}" && -z "${committed_sequence}" ]]; then
+  echo "Unable to determine the committed ${CHAINCODE_NAME} sequence." >&2
+  exit 1
+fi
+
+if [[ -n "${committed_sequence}" ]] \
+  && ((CHAINCODE_SEQUENCE <= committed_sequence)); then
+  echo "${CHAINCODE_NAME} is committed at sequence ${committed_sequence} on ${CHANNEL_NAME}." >&2
+  echo "FABRIC_CHAINCODE_SEQUENCE must be greater than ${committed_sequence} for an upgrade." >&2
   exit 1
 fi
 
