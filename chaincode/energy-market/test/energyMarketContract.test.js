@@ -3,11 +3,10 @@ const test = require("node:test");
 
 const { EnergyMarketContract } = require("../dist/energyMarketContract");
 
-class MockHistoryIterator {
+class MockIterator {
   constructor(entries) {
     this.entries = entries;
     this.position = 0;
-    this.closed = false;
   }
 
   async next() {
@@ -20,17 +19,7 @@ class MockHistoryIterator {
     return { done: false, value };
   }
 
-  async close() {
-    this.closed = true;
-  }
-
-  async *[Symbol.asyncIterator]() {
-    while (this.position < this.entries.length) {
-      const value = this.entries[this.position];
-      this.position += 1;
-      yield value;
-    }
-  }
+  async close() {}
 }
 
 class MockStub {
@@ -65,8 +54,8 @@ class MockStub {
     this.transactionNumber += 1;
     const stateValue = Buffer.from(value);
     this.state.set(key, stateValue);
-
     const history = this.history.get(key) ?? [];
+
     history.push({
       txId: this.getTxID(),
       timestamp: this.getTxTimestamp(),
@@ -77,7 +66,7 @@ class MockStub {
   }
 
   async getHistoryForKey(key) {
-    return new MockHistoryIterator(this.history.get(key) ?? []);
+    return new MockIterator(this.history.get(key) ?? []);
   }
 
   async getStateByPartialCompositeKey(objectType) {
@@ -87,7 +76,7 @@ class MockStub {
       .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
       .map(([key, value]) => ({ key, value }));
 
-    return new MockHistoryIterator(entries);
+    return new MockIterator(entries);
   }
 }
 
@@ -104,34 +93,24 @@ async function createListing(contract, ctx, listingId = "listing-001") {
       "battery-001",
       "1.5",
       "25",
-      "ENERGY",
     ),
   );
 }
 
-test("creates and reads an active listing", async () => {
+test("creates and reads an active whole-energy listing", async () => {
   const contract = new EnergyMarketContract();
   const ctx = createContext();
-
   const created = await createListing(contract, ctx);
   const read = JSON.parse(await contract.ReadListing(ctx, "listing-001"));
 
   assert.deepEqual(read, created);
-  assert.equal(created.remainingKwh, 1.5);
-  assert.equal(created.pricePerKwhTokenUnits, 25);
-  assert.equal(created.tokenSymbol, "ENERGY");
+  assert.equal(created.userId, "seller-001");
+  assert.equal(created.energyKWh, 1.5);
+  assert.equal(created.priceTokensPerKWh, 25);
   assert.equal(created.status, "active");
-});
-
-test("rejects duplicate listing IDs", async () => {
-  const contract = new EnergyMarketContract();
-  const ctx = createContext();
-  await createListing(contract, ctx);
-
-  await assert.rejects(
-    () => createListing(contract, ctx),
-    /Listing listing-001 already exists/,
-  );
+  assert.equal(created.closedAt, null);
+  assert.equal("remainingKwh" in created, false);
+  assert.equal("updatedAt" in created, false);
 });
 
 test("returns only active listings", async () => {
@@ -139,78 +118,58 @@ test("returns only active listings", async () => {
   const ctx = createContext();
   await createListing(contract, ctx, "listing-002");
   await createListing(contract, ctx, "listing-001");
-  await contract.CancelListing(ctx, "listing-001", "seller-001");
+  await contract.BeginPurchaseHandshake(ctx, "listing-001");
 
   const listings = JSON.parse(await contract.GetActiveListings(ctx));
 
   assert.equal(listings.length, 1);
   assert.equal(listings[0].listingId, "listing-002");
-  assert.equal(listings[0].status, "active");
-  assert.equal(listings[0].remainingKwh, 1.5);
 });
 
-test("rejects invalid listing arguments", async () => {
+test("withdraws a pending handshake back to active", async () => {
   const contract = new EnergyMarketContract();
   const ctx = createContext();
+  await createListing(contract, ctx);
 
-  await assert.rejects(
-    () =>
-      contract.CreateListing(
-        ctx,
-        "",
-        "seller-001",
-        "battery-001",
-        "1",
-        "25",
-        "ENERGY",
-      ),
-    /listingId is required/,
+  const pending = JSON.parse(
+    await contract.BeginPurchaseHandshake(ctx, "listing-001"),
   );
-  await assert.rejects(
-    () =>
-      contract.CreateListing(
-        ctx,
-        "listing-002",
-        "seller-001",
-        "battery-001",
-        "0",
-        "25",
-        "ENERGY",
-      ),
-    /quantityKwh must be a finite value greater than zero/,
+  const active = JSON.parse(
+    await contract.WithdrawPurchaseHandshake(ctx, "listing-001"),
   );
-  await assert.rejects(
-    () =>
-      contract.CreateListing(
-        ctx,
-        "listing-003",
-        "seller-001",
-        "battery-001",
-        "1",
-        "1.5",
-        "ENERGY",
-      ),
-    /pricePerKwhTokenUnits must be a non-negative integer string/,
-  );
-  await assert.rejects(
-    () =>
-      contract.CreateListing(
-        ctx,
-        "listing-004",
-        "seller-001",
-        "battery-001",
-        "1",
-        "25",
-        "AUD",
-      ),
-    /tokenSymbol must be ENERGY/,
-  );
+
+  assert.equal(pending.status, "pending");
+  assert.equal(active.status, "active");
+  assert.equal(active.closedAt, null);
 });
 
-test("cancels an active listing only for its owner", async () => {
+test("settles a pending handshake atomically", async () => {
   const contract = new EnergyMarketContract();
   const ctx = createContext();
-  const created = await createListing(contract, ctx);
+  await createListing(contract, ctx);
+  await contract.BeginPurchaseHandshake(ctx, "listing-001");
+
+  const result = JSON.parse(
+    await contract.CompletePurchaseHandshake(ctx, "listing-001", "buyer-001"),
+  );
+  const transaction = JSON.parse(
+    await contract.ReadTransaction(ctx, result.transaction.transactionId),
+  );
+
+  assert.equal(result.listing.status, "sold");
+  assert.notEqual(result.listing.closedAt, null);
+  assert.equal(transaction.listingId, "listing-001");
+  assert.equal(transaction.sellerId, "seller-001");
+  assert.equal(transaction.buyerId, "buyer-001");
+  assert.equal(transaction.energyKWh, 1.5);
+  assert.equal(transaction.priceTokensPerKWh, 25);
+});
+
+test("cancels active or pending listings for their seller", async () => {
+  const contract = new EnergyMarketContract();
+  const ctx = createContext();
+  await createListing(contract, ctx);
+  await contract.BeginPurchaseHandshake(ctx, "listing-001");
 
   await assert.rejects(
     () => contract.CancelListing(ctx, "listing-001", "seller-002"),
@@ -222,33 +181,63 @@ test("cancels an active listing only for its owner", async () => {
   );
 
   assert.equal(cancelled.status, "cancelled");
-  assert.equal(cancelled.quantityKwh, created.quantityKwh);
-  assert.equal(cancelled.remainingKwh, created.remainingKwh);
-  assert.notEqual(cancelled.cancelledAt, null);
+  assert.notEqual(cancelled.closedAt, null);
+});
+
+test("rejects invalid listing arguments and invalid state transitions", async () => {
+  const contract = new EnergyMarketContract();
+  const ctx = createContext();
 
   await assert.rejects(
-    () => contract.CancelListing(ctx, "listing-001", "seller-001"),
-    /cannot be cancelled because it is cancelled/,
+    () =>
+      contract.CreateListing(ctx, "", "seller-001", "battery-001", "1", "25"),
+    /listingId is required/,
   );
   await assert.rejects(
-    () => contract.CancelListing(ctx, "missing-listing", "seller-001"),
-    /Listing missing-listing does not exist/,
+    () =>
+      contract.CreateListing(
+        ctx,
+        "listing-001",
+        "seller-001",
+        "battery-001",
+        "0",
+        "25",
+      ),
+    /energyKWh must be a finite value greater than zero/,
+  );
+  await assert.rejects(
+    () =>
+      contract.CreateListing(
+        ctx,
+        "listing-001",
+        "seller-001",
+        "battery-001",
+        "1",
+        "1.5",
+      ),
+    /priceTokensPerKWh must be a non-negative integer string/,
+  );
+
+  await createListing(contract, ctx);
+  await assert.rejects(
+    () => contract.CompletePurchaseHandshake(ctx, "listing-001", "buyer-001"),
+    /must be pending; it is active/,
   );
 });
 
-test("returns listing history after creation and cancellation", async () => {
+test("returns listing history for lifecycle transitions", async () => {
   const contract = new EnergyMarketContract();
   const ctx = createContext();
   await createListing(contract, ctx);
-  await contract.CancelListing(ctx, "listing-001", "seller-001");
+  await contract.BeginPurchaseHandshake(ctx, "listing-001");
+  await contract.WithdrawPurchaseHandshake(ctx, "listing-001");
 
   const history = JSON.parse(
     await contract.GetListingHistory(ctx, "listing-001"),
   );
 
-  assert.equal(history.length, 2);
+  assert.equal(history.length, 3);
   assert.equal(history[0].value.status, "active");
-  assert.equal(history[1].value.status, "cancelled");
-  assert.equal(history[0].isDelete, false);
-  assert.equal(history[1].transactionId, "tx-2");
+  assert.equal(history[1].value.status, "pending");
+  assert.equal(history[2].value.status, "active");
 });

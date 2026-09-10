@@ -7,21 +7,30 @@ import {
 } from "fabric-contract-api";
 
 type UserStatus = "ACTIVE" | "INACTIVE";
-type ListingStatus = "active" | "cancelled" | "sold" | "expired";
+type ListingStatus = "active" | "pending" | "cancelled" | "sold";
 
 interface EnergyListing {
   docType: "energyListing";
   listingId: string;
-  sellerId: string;
+  userId: string;
   assetId: string;
-  quantityKwh: number;
-  remainingKwh: number;
-  pricePerKwhTokenUnits: number;
-  tokenSymbol: "ENERGY";
   status: ListingStatus;
+  energyKWh: number;
+  priceTokensPerKWh: number;
   createdAt: string;
-  updatedAt: string;
-  cancelledAt: string | null;
+  closedAt: string | null;
+}
+
+interface EnergyTransaction {
+  docType: "energyTransaction";
+  transactionId: string;
+  listingId: string;
+  sellerId: string;
+  buyerId: string;
+  assetId: string;
+  energyKWh: number;
+  priceTokensPerKWh: number;
+  completedAt: string;
 }
 
 interface ListingHistoryEntry {
@@ -44,7 +53,8 @@ interface UserAccount {
 
 @Info({
   title: "energy-market",
-  description: "Minimal user lifecycle contract for the T187 capstone",
+  description:
+    "Energy marketplace listing and settlement contract for the T187 capstone",
 })
 export class EnergyMarketContract extends Contract {
   @Transaction()
@@ -116,29 +126,20 @@ export class EnergyMarketContract extends Contract {
   public async CreateListing(
     ctx: Context,
     listingId: string,
-    sellerId: string,
+    userId: string,
     assetId: string,
-    quantityKwh: string,
-    pricePerKwhTokenUnits: string,
-    tokenSymbol: string,
+    energyKWh: string,
+    priceTokensPerKWh: string,
   ): Promise<string> {
     this.requireNonEmpty("listingId", listingId);
-    this.requireNonEmpty("sellerId", sellerId);
+    this.requireNonEmpty("userId", userId);
     this.requireNonEmpty("assetId", assetId);
 
-    const parsedQuantityKwh = this.parsePositiveQuantity(
-      "quantityKwh",
-      quantityKwh,
+    const parsedEnergyKWh = this.parsePositiveQuantity("energyKWh", energyKWh);
+    const parsedPriceTokensPerKWh = this.parsePositiveInteger(
+      "priceTokensPerKWh",
+      priceTokensPerKWh,
     );
-    const parsedPricePerKwhTokenUnits = this.parsePositiveInteger(
-      "pricePerKwhTokenUnits",
-      pricePerKwhTokenUnits,
-    );
-
-    if (tokenSymbol !== "ENERGY") {
-      throw new Error("tokenSymbol must be ENERGY");
-    }
-
     const listingKey = this.getListingKey(ctx, listingId);
     const existingState = await ctx.stub.getState(listingKey);
 
@@ -146,20 +147,16 @@ export class EnergyMarketContract extends Contract {
       throw new Error(`Listing ${listingId} already exists`);
     }
 
-    const timestamp = this.getTimestampIso(ctx);
     const listing: EnergyListing = {
       docType: "energyListing",
       listingId,
-      sellerId,
+      userId,
       assetId,
-      quantityKwh: parsedQuantityKwh,
-      remainingKwh: parsedQuantityKwh,
-      pricePerKwhTokenUnits: parsedPricePerKwhTokenUnits,
-      tokenSymbol: "ENERGY",
       status: "active",
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      cancelledAt: null,
+      energyKWh: parsedEnergyKWh,
+      priceTokensPerKWh: parsedPriceTokensPerKWh,
+      createdAt: this.getTimestampIso(ctx),
+      closedAt: null,
     };
 
     await ctx.stub.putState(listingKey, Buffer.from(JSON.stringify(listing)));
@@ -172,13 +169,13 @@ export class EnergyMarketContract extends Contract {
   public async ReadListing(ctx: Context, listingId: string): Promise<string> {
     this.requireNonEmpty("listingId", listingId);
 
-    const listing = await this.readListing(
-      ctx,
-      this.getListingKey(ctx, listingId),
-      listingId,
+    return JSON.stringify(
+      await this.readListing(
+        ctx,
+        this.getListingKey(ctx, listingId),
+        listingId,
+      ),
     );
-
-    return JSON.stringify(listing);
   }
 
   @Transaction(false)
@@ -215,41 +212,141 @@ export class EnergyMarketContract extends Contract {
 
   @Transaction()
   @Returns("string")
+  public async BeginPurchaseHandshake(
+    ctx: Context,
+    listingId: string,
+  ): Promise<string> {
+    const listing = await this.getOpenListing(ctx, listingId, "active");
+    const pendingListing: EnergyListing = {
+      ...listing,
+      status: "pending",
+    };
+
+    await ctx.stub.putState(
+      this.getListingKey(ctx, listingId),
+      Buffer.from(JSON.stringify(pendingListing)),
+    );
+
+    return JSON.stringify(pendingListing);
+  }
+
+  @Transaction()
+  @Returns("string")
+  public async WithdrawPurchaseHandshake(
+    ctx: Context,
+    listingId: string,
+  ): Promise<string> {
+    const listing = await this.getOpenListing(ctx, listingId, "pending");
+    const activeListing: EnergyListing = {
+      ...listing,
+      status: "active",
+    };
+
+    await ctx.stub.putState(
+      this.getListingKey(ctx, listingId),
+      Buffer.from(JSON.stringify(activeListing)),
+    );
+
+    return JSON.stringify(activeListing);
+  }
+
+  @Transaction()
+  @Returns("string")
   public async CancelListing(
     ctx: Context,
     listingId: string,
-    sellerId: string,
+    userId: string,
   ): Promise<string> {
     this.requireNonEmpty("listingId", listingId);
-    this.requireNonEmpty("sellerId", sellerId);
+    this.requireNonEmpty("userId", userId);
 
-    const listingKey = this.getListingKey(ctx, listingId);
-    const listing = await this.readListing(ctx, listingKey, listingId);
+    const listing = await this.readListing(
+      ctx,
+      this.getListingKey(ctx, listingId),
+      listingId,
+    );
 
-    if (listing.sellerId !== sellerId) {
-      throw new Error(`Seller ${sellerId} does not own listing ${listingId}`);
+    if (listing.userId !== userId) {
+      throw new Error(`User ${userId} does not own listing ${listingId}`);
     }
 
-    if (listing.status !== "active") {
+    if (listing.status !== "active" && listing.status !== "pending") {
       throw new Error(
         `Listing ${listingId} cannot be cancelled because it is ${listing.status}`,
       );
     }
 
-    const timestamp = this.getTimestampIso(ctx);
-    const updatedListing: EnergyListing = {
+    const cancelledListing: EnergyListing = {
       ...listing,
       status: "cancelled",
-      updatedAt: timestamp,
-      cancelledAt: timestamp,
+      closedAt: this.getTimestampIso(ctx),
     };
 
     await ctx.stub.putState(
-      listingKey,
-      Buffer.from(JSON.stringify(updatedListing)),
+      this.getListingKey(ctx, listingId),
+      Buffer.from(JSON.stringify(cancelledListing)),
     );
 
-    return JSON.stringify(updatedListing);
+    return JSON.stringify(cancelledListing);
+  }
+
+  @Transaction()
+  @Returns("string")
+  public async CompletePurchaseHandshake(
+    ctx: Context,
+    listingId: string,
+    buyerId: string,
+  ): Promise<string> {
+    this.requireNonEmpty("listingId", listingId);
+    this.requireNonEmpty("buyerId", buyerId);
+
+    const listing = await this.getOpenListing(ctx, listingId, "pending");
+    const completedAt = this.getTimestampIso(ctx);
+    const soldListing: EnergyListing = {
+      ...listing,
+      status: "sold",
+      closedAt: completedAt,
+    };
+    const transaction: EnergyTransaction = {
+      docType: "energyTransaction",
+      transactionId: ctx.stub.getTxID(),
+      listingId: listing.listingId,
+      sellerId: listing.userId,
+      buyerId,
+      assetId: listing.assetId,
+      energyKWh: listing.energyKWh,
+      priceTokensPerKWh: listing.priceTokensPerKWh,
+      completedAt,
+    };
+
+    await ctx.stub.putState(
+      this.getListingKey(ctx, listingId),
+      Buffer.from(JSON.stringify(soldListing)),
+    );
+    await ctx.stub.putState(
+      this.getTransactionKey(ctx, transaction.transactionId),
+      Buffer.from(JSON.stringify(transaction)),
+    );
+
+    return JSON.stringify({ listing: soldListing, transaction });
+  }
+
+  @Transaction(false)
+  @Returns("string")
+  public async ReadTransaction(
+    ctx: Context,
+    transactionId: string,
+  ): Promise<string> {
+    this.requireNonEmpty("transactionId", transactionId);
+    const state = await ctx.stub.getState(
+      this.getTransactionKey(ctx, transactionId),
+    );
+
+    if (state.length === 0) {
+      throw new Error(`Transaction ${transactionId} does not exist`);
+    }
+
+    return state.toString();
   }
 
   @Transaction(false)
@@ -260,8 +357,9 @@ export class EnergyMarketContract extends Contract {
   ): Promise<string> {
     this.requireNonEmpty("listingId", listingId);
 
-    const listingKey = this.getListingKey(ctx, listingId);
-    const iterator = await ctx.stub.getHistoryForKey(listingKey);
+    const iterator = await ctx.stub.getHistoryForKey(
+      this.getListingKey(ctx, listingId),
+    );
     const history: ListingHistoryEntry[] = [];
 
     try {
@@ -296,6 +394,31 @@ export class EnergyMarketContract extends Contract {
 
   private getListingKey(ctx: Context, listingId: string): string {
     return ctx.stub.createCompositeKey("energyListing", [listingId]);
+  }
+
+  private getTransactionKey(ctx: Context, transactionId: string): string {
+    return ctx.stub.createCompositeKey("energyTransaction", [transactionId]);
+  }
+
+  private async getOpenListing(
+    ctx: Context,
+    listingId: string,
+    requiredStatus: "active" | "pending",
+  ): Promise<EnergyListing> {
+    this.requireNonEmpty("listingId", listingId);
+    const listing = await this.readListing(
+      ctx,
+      this.getListingKey(ctx, listingId),
+      listingId,
+    );
+
+    if (listing.status !== requiredStatus) {
+      throw new Error(
+        `Listing ${listingId} must be ${requiredStatus}; it is ${listing.status}`,
+      );
+    }
+
+    return listing;
   }
 
   private async readUser(

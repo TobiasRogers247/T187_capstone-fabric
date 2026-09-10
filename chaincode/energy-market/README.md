@@ -1,133 +1,72 @@
 # Energy Market Chaincode
 
-This package contains the first Fabric chaincode slice for the capstone.
-
-## Current Transactions
-
-- `CreateUser(userId, fabricEnrollmentId, initialBalanceCents)`
-- `DeactivateUser(userId)`
-- `CreateListing(listingId, sellerId, assetId, quantityKwh, pricePerKwhTokenUnits, tokenSymbol)`
-- `ReadListing(listingId)`
-- `GetActiveListings()`
-- `CancelListing(listingId, sellerId)`
-- `GetListingHistory(listingId)`
-
-## User State
-
-Each on-chain user account stores:
-
-- `userId`
-- `fabricEnrollmentId`
-- `balanceCents`
-- `status`
-- `createdAt`
-- `updatedAt`
-- `deactivatedAt`
-
-## Notes
-
-- Balances are stored as integer cents.
-- User deletion is modeled as status change to `INACTIVE`.
-- Fabric CA identity revocation is handled separately from chaincode state changes.
+This package provides the on-chain marketplace lifecycle for whole-energy listings.
+Fabric is authoritative for listing status, energy amount, token-unit price,
+Fabric timestamps, immutable history, and completed settlement records. MongoDB
+owns the buyer handshake details before settlement, expiry decisions, UI data, and
+operational projections.
 
 ## Listing State
-
-Each listing is an immutable lifecycle record addressed by `listingId`. Its current
-world-state value is updated as the listing progresses, while Fabric retains every
-version in key history. Listings are never physically deleted.
 
 ```ts
 {
   docType: "energyListing",
   listingId: "listing-001",
-  sellerId: "application-user-uuid",
+  userId: "seller-uuid",
   assetId: "battery-uuid",
-  quantityKwh: 1.5,
-  remainingKwh: 1.5,
-  pricePerKwhTokenUnits: 25,
-  tokenSymbol: "ENERGY",
   status: "active",
-  createdAt: "2026-09-09T00:00:00.000Z",
-  updatedAt: "2026-09-09T00:00:00.000Z",
-  cancelledAt: null
+  energyKWh: 4.01,
+  priceTokensPerKWh: 22,
+  createdAt: "2026-09-10T00:00:00.000Z",
+  closedAt: null,
 }
 ```
 
-The allowed statuses are `active`, `cancelled`, `sold`, and `expired`. This slice
-creates active listings and cancels active listings. A future purchase transaction
-will reduce `remainingKwh`, transfer tokens, create a purchase record, and mark a
-listing `sold` when its remaining quantity reaches zero.
+The allowed lifecycle is:
 
-`quantityKwh` is a positive decimal string at invocation time. Token prices are
-positive integer units; use no floating-point currency values. The only supported
-token symbol is `ENERGY`.
-
-## Listing Transactions
-
-### CreateListing
-
-Submit a new seller offer. Duplicate IDs, empty IDs, non-positive quantities,
-non-positive/non-integer token prices, and token symbols other than `ENERGY` are
-rejected. `remainingKwh` is initialized from `quantityKwh`; timestamps come from
-the Fabric transaction timestamp.
-
-```ts
-await fabricClient.submitTransaction(
-  "CreateListing",
-  listingId,
-  sellerId,
-  assetId,
-  quantityKwh.toString(),
-  pricePerKwhTokenUnits.toString(),
-  "ENERGY",
-);
+```text
+active -> pending -> active
+active -> pending -> sold
+active -> cancelled
+pending -> cancelled
 ```
 
-Returns the created listing JSON.
+`cancelled` and `sold` are terminal and set `closedAt`. Listings are whole offers:
+there is no remaining quantity, partial fill, or mutable price/quantity state.
 
-### ReadListing
+## Transactions
 
-Evaluate the current listing state. A missing ID returns `Listing <listingId> does not exist`.
+- `CreateListing(listingId, userId, assetId, energyKWh, priceTokensPerKWh)`
+- `ReadListing(listingId)`
+- `GetActiveListings()`
+- `BeginPurchaseHandshake(listingId)`
+- `WithdrawPurchaseHandshake(listingId)`
+- `CancelListing(listingId, userId)`
+- `CompletePurchaseHandshake(listingId, buyerId)`
+- `ReadTransaction(transactionId)`
+- `GetListingHistory(listingId)`
 
-```ts
-await fabricClient.evaluateTransaction("ReadListing", listingId);
-```
+`energyKWh` is a positive decimal string when submitted. `priceTokensPerKWh` is a
+positive integer string and must be within JavaScript's safe integer range.
 
-### GetActiveListings
-
-Evaluate the current active marketplace offers. It returns an array of listings
-with `status: "active"`; cancelled, sold, and expired listings are excluded. This
-is the ledger-authoritative source for the frontend marketplace listing view.
-
-```ts
-await fabricClient.evaluateTransaction("GetActiveListings");
-```
-
-### CancelListing
-
-Submit a cancellation. The supplied seller ID must own the listing, and only an
-`active` listing can be cancelled. Cancellation preserves `quantityKwh` and
-`remainingKwh`, sets `status` to `cancelled`, and sets Fabric-derived timestamps.
+The backend owns handshake authorization because it signs through the shared
+backend service Fabric identity. A buyer ID is not stored in a listing while the
+handshake is pending. On `CompletePurchaseHandshake`, Fabric atomically marks the
+pending listing `sold` and writes this immutable transaction state:
 
 ```ts
-await fabricClient.submitTransaction("CancelListing", listingId, sellerId);
+{
+  docType: "energyTransaction",
+  transactionId: "fabric-transaction-id",
+  listingId: "listing-001",
+  sellerId: "seller-uuid",
+  buyerId: "buyer-uuid",
+  assetId: "battery-uuid",
+  energyKWh: 4.01,
+  priceTokensPerKWh: 22,
+  completedAt: "2026-09-10T00:00:00.000Z",
+}
 ```
 
-### GetListingHistory
-
-Evaluate the Fabric audit history for a listing. It returns an array in this format:
-
-```ts
-[
-  {
-    transactionId: "fabric-transaction-id",
-    timestamp: "2026-09-09T00:00:00.000Z",
-    isDelete: false,
-    value: { "...": "listing state at that transaction" },
-  },
-];
-```
-
-```ts
-await fabricClient.evaluateTransaction("GetListingHistory", listingId);
-```
+`expiresAt` remains a MongoDB operational field. When MongoDB determines a listing
+has expired, the backend submits `CancelListing` using the listing owner's user ID.
