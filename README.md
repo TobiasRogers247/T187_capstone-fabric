@@ -34,14 +34,11 @@ It already includes:
 - CA and network Docker Compose definitions
 - channel topology in `network/config/configtx.yaml`
 - initial TypeScript chaincode in `chaincode/energy-market`
-- backend-first Platform bootstrap scripts in `network/scripts/`
+- organization bootstrap, channel creation, and chaincode lifecycle scripts in `network/scripts/`
 - setup documentation in `docs/`
 
-It does not yet include a complete bootstrap flow for:
-
-- generated MSP and TLS material
-- generated channel artifacts
-- gateway connection assets for the application
+It does not include gateway connection assets for the application. The backend uses
+the generated Platform service identity through `network/scripts/exportBackendEnv.sh`.
 
 ## Commit These
 
@@ -71,9 +68,40 @@ It does not yet include a complete bootstrap flow for:
 4. Generate runtime artifacts there.
 5. Run Docker and Fabric operations there, not from committed generated output.
 
-## Next Step
+## VM Bootstrap
 
-Use `network/scripts/registerEnroll-platform.sh` to generate the minimum Platform org material for a backend health check, then start `peer0.platform.capstone.local` and run `network/scripts/exportBackendEnv.sh` to print the backend env block. The export script reads the backend endpoint values from `.env`, so shared VM setups can override `BACKEND_FABRIC_PEER_ENDPOINT`, `BACKEND_FABRIC_CA_URL`, and `BACKEND_FABRIC_CA_AFFILIATION` there. The full multi-org bootstrap flow is still the next milestone after that.
+On the Fabric VM, copy `.env.example` to `.env` if it does not already exist and
+replace the example CA secrets before running a shared environment.
+
+The first network bootstrap creates generated MSP/TLS material, starts the orderer
+and peers, creates `energychannel`, and deploys `energy-market`:
+
+```bash
+cd ~/code/T187_capstone-fabric
+bash network/scripts/bootstrapNetwork.sh
+```
+
+The deployed chaincode uses a Platform-only endorsement policy. `AuditOrgMSP`
+approves the chaincode definition and maintains an independent peer for read and
+audit queries, but does not need to endorse normal marketplace writes.
+
+To deploy an approved chaincode upgrade, increment both values in the VM `.env`:
+
+```text
+FABRIC_CHAINCODE_VERSION=0.2.0
+FABRIC_CHAINCODE_SEQUENCE=2
+```
+
+Then run:
+
+```bash
+bash network/scripts/deployChaincode.sh
+```
+
+`git pull` updates source only. It does not create a channel or deploy chaincode.
+Run the lifecycle script after pulling an approved chaincode change.
+
+The export script reads the backend endpoint values from `.env`, so shared VM setups can override `BACKEND_FABRIC_PEER_ENDPOINT`, `BACKEND_FABRIC_CA_URL`, and `BACKEND_FABRIC_CA_AFFILIATION` there.
 
 After that bootstrap is in place, you can register a normal Platform user identity with `bash network/scripts/registerUser-platform.sh <enrollment-id> <secret>`.
 
