@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "start": "npm run build && fabric-chaincode-node start",
+    "start": "fabric-chaincode-node start",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test test/energyMarketContract.test.js"
   },
