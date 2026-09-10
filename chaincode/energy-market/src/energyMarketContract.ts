@@ -7,7 +7,7 @@ import {
 } from "fabric-contract-api";
 
 type UserStatus = "ACTIVE" | "INACTIVE";
-type ListingStatus = "active" | "pending" | "cancelled" | "sold";
+type ListingStatus = "active" | "cancelled" | "sold";
 
 interface EnergyListing {
   docType: "energyListing";
@@ -212,46 +212,6 @@ export class EnergyMarketContract extends Contract {
 
   @Transaction()
   @Returns("string")
-  public async BeginPurchaseHandshake(
-    ctx: Context,
-    listingId: string,
-  ): Promise<string> {
-    const listing = await this.getOpenListing(ctx, listingId, "active");
-    const pendingListing: EnergyListing = {
-      ...listing,
-      status: "pending",
-    };
-
-    await ctx.stub.putState(
-      this.getListingKey(ctx, listingId),
-      Buffer.from(JSON.stringify(pendingListing)),
-    );
-
-    return JSON.stringify(pendingListing);
-  }
-
-  @Transaction()
-  @Returns("string")
-  public async WithdrawPurchaseHandshake(
-    ctx: Context,
-    listingId: string,
-  ): Promise<string> {
-    const listing = await this.getOpenListing(ctx, listingId, "pending");
-    const activeListing: EnergyListing = {
-      ...listing,
-      status: "active",
-    };
-
-    await ctx.stub.putState(
-      this.getListingKey(ctx, listingId),
-      Buffer.from(JSON.stringify(activeListing)),
-    );
-
-    return JSON.stringify(activeListing);
-  }
-
-  @Transaction()
-  @Returns("string")
   public async CancelListing(
     ctx: Context,
     listingId: string,
@@ -270,7 +230,7 @@ export class EnergyMarketContract extends Contract {
       throw new Error(`User ${userId} does not own listing ${listingId}`);
     }
 
-    if (listing.status !== "active" && listing.status !== "pending") {
+    if (listing.status !== "active") {
       throw new Error(
         `Listing ${listingId} cannot be cancelled because it is ${listing.status}`,
       );
@@ -300,7 +260,7 @@ export class EnergyMarketContract extends Contract {
     this.requireNonEmpty("listingId", listingId);
     this.requireNonEmpty("buyerId", buyerId);
 
-    const listing = await this.getOpenListing(ctx, listingId, "pending");
+    const listing = await this.getActiveListing(ctx, listingId);
     const completedAt = this.getTimestampIso(ctx);
     const soldListing: EnergyListing = {
       ...listing,
@@ -400,10 +360,9 @@ export class EnergyMarketContract extends Contract {
     return ctx.stub.createCompositeKey("energyTransaction", [transactionId]);
   }
 
-  private async getOpenListing(
+  private async getActiveListing(
     ctx: Context,
     listingId: string,
-    requiredStatus: "active" | "pending",
   ): Promise<EnergyListing> {
     this.requireNonEmpty("listingId", listingId);
     const listing = await this.readListing(
@@ -412,9 +371,9 @@ export class EnergyMarketContract extends Contract {
       listingId,
     );
 
-    if (listing.status !== requiredStatus) {
+    if (listing.status !== "active") {
       throw new Error(
-        `Listing ${listingId} must be ${requiredStatus}; it is ${listing.status}`,
+        `Listing ${listingId} must be active; it is ${listing.status}`,
       );
     }
 

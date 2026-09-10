@@ -118,7 +118,7 @@ test("returns only active listings", async () => {
   const ctx = createContext();
   await createListing(contract, ctx, "listing-002");
   await createListing(contract, ctx, "listing-001");
-  await contract.BeginPurchaseHandshake(ctx, "listing-001");
+  await contract.CancelListing(ctx, "listing-001", "seller-001");
 
   const listings = JSON.parse(await contract.GetActiveListings(ctx));
 
@@ -126,28 +126,10 @@ test("returns only active listings", async () => {
   assert.equal(listings[0].listingId, "listing-002");
 });
 
-test("withdraws a pending handshake back to active", async () => {
+test("settles an active listing atomically after the backend handshake", async () => {
   const contract = new EnergyMarketContract();
   const ctx = createContext();
   await createListing(contract, ctx);
-
-  const pending = JSON.parse(
-    await contract.BeginPurchaseHandshake(ctx, "listing-001"),
-  );
-  const active = JSON.parse(
-    await contract.WithdrawPurchaseHandshake(ctx, "listing-001"),
-  );
-
-  assert.equal(pending.status, "pending");
-  assert.equal(active.status, "active");
-  assert.equal(active.closedAt, null);
-});
-
-test("settles a pending handshake atomically", async () => {
-  const contract = new EnergyMarketContract();
-  const ctx = createContext();
-  await createListing(contract, ctx);
-  await contract.BeginPurchaseHandshake(ctx, "listing-001");
 
   const result = JSON.parse(
     await contract.CompletePurchaseHandshake(ctx, "listing-001", "buyer-001"),
@@ -165,11 +147,10 @@ test("settles a pending handshake atomically", async () => {
   assert.equal(transaction.priceTokensPerKWh, 25);
 });
 
-test("cancels active or pending listings for their seller", async () => {
+test("cancels active listings for their seller", async () => {
   const contract = new EnergyMarketContract();
   const ctx = createContext();
   await createListing(contract, ctx);
-  await contract.BeginPurchaseHandshake(ctx, "listing-001");
 
   await assert.rejects(
     () => contract.CancelListing(ctx, "listing-001", "seller-002"),
@@ -219,9 +200,10 @@ test("rejects invalid listing arguments and invalid state transitions", async ()
   );
 
   await createListing(contract, ctx);
+  await contract.CancelListing(ctx, "listing-001", "seller-001");
   await assert.rejects(
     () => contract.CompletePurchaseHandshake(ctx, "listing-001", "buyer-001"),
-    /must be pending; it is active/,
+    /must be active; it is cancelled/,
   );
 });
 
@@ -229,15 +211,13 @@ test("returns listing history for lifecycle transitions", async () => {
   const contract = new EnergyMarketContract();
   const ctx = createContext();
   await createListing(contract, ctx);
-  await contract.BeginPurchaseHandshake(ctx, "listing-001");
-  await contract.WithdrawPurchaseHandshake(ctx, "listing-001");
+  await contract.CancelListing(ctx, "listing-001", "seller-001");
 
   const history = JSON.parse(
     await contract.GetListingHistory(ctx, "listing-001"),
   );
 
-  assert.equal(history.length, 3);
+  assert.equal(history.length, 2);
   assert.equal(history[0].value.status, "active");
-  assert.equal(history[1].value.status, "pending");
-  assert.equal(history[2].value.status, "active");
+  assert.equal(history[1].value.status, "cancelled");
 });
