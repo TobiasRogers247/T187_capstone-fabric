@@ -1,6 +1,6 @@
 {
   "name": "energy-market-chaincode",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Hyperledger Fabric chaincode for the T187 capstone energy market",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

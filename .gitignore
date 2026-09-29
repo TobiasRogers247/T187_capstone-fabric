@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+backend-fabric.env
 AGENTS.md
 
 # Hyperledger Fabric generated crypto and MSP material

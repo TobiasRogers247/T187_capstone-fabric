@@ -1,13 +1,8 @@
 # Local Windows Setup
 
-This guide sets up a local Hyperledger Fabric development environment on Windows for this repository.
-
-## Current machine status
-
-Checked on August 11, 2026:
-
-- `WSL` is not installed on this machine yet
-- `docker` is not installed on this machine yet
+This optional guide sets up a Fabric runtime in WSL. The project's main workflow
+is to edit source on Windows and run Fabric on the Ubuntu VM. Local TypeScript
+builds and contract tests do not require a running Fabric network.
 
 ## Official references
 
@@ -116,6 +111,9 @@ chmod +x install-fabric.sh
 ./install-fabric.sh docker samples binary
 ```
 
+Use the installer's version options to match the Fabric and CA versions in
+`.env.example` when preparing the project runtime.
+
 This installs:
 
 - `fabric-samples`
@@ -148,11 +146,11 @@ When finished:
 
 ## Step 7: What comes next
 
-After the test network is working, the next work is:
+Stop the sample network before starting this project's network: both use some of
+the same ports. The project already contains its topology, chaincode, enrollment
+and deployment scripts. Follow the repository [README](../README.md) to prepare
+the private `.env` and bootstrap a fresh project network.
 
-1. Decide the actual Fabric structure for this project
-2. Create your own network files under `network/`
-3. Create your own chaincode under `chaincode/energy-market/`
-4. Add enrollment and startup scripts under `network/scripts/`
-5. Later clone the same repo onto the remote Ubuntu VM and repeat the runtime generation there
-
+For the coordinated Fabric/MongoDB reset, follow the separate planning notes in
+[Fabric review](fabric-review.md); the sample network commands do not reset this
+project's data.

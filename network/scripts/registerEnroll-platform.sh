@@ -39,7 +39,7 @@ fi
 
 register_identity "${CA_NAME}" "${CA_CERT}" peer0 "${PEER_SECRET}" peer
 register_identity "${CA_NAME}" "${CA_CERT}" "${ADMIN_ID}" "${ADMIN_SECRET}" admin
-register_identity "${CA_NAME}" "${CA_CERT}" "${BACKEND_ID}" "${BACKEND_SECRET}" client
+register_identity "${CA_NAME}" "${CA_CERT}" "${BACKEND_ID}" "${BACKEND_SECRET}" client "energyMarket.backend=true:ecert"
 
 if ! has_signcert "${PEER_DIR}/msp"; then
   fabric-ca-client enroll \
@@ -76,6 +76,7 @@ if ! has_signcert "${ORG_DIR}/users/${BACKEND_ID}@${ORG_DOMAIN}/msp"; then
     -u "https://${BACKEND_ID}:${BACKEND_SECRET}@localhost:7054" \
     --caname "${CA_NAME}" \
     -M "${ORG_DIR}/users/${BACKEND_ID}@${ORG_DOMAIN}/msp" \
+    --enrollment.attrs "energyMarket.backend" \
     --tls.certfiles "${CA_CERT}"
   cp "${ORG_MSP_DIR}/config.yaml" "${ORG_DIR}/users/${BACKEND_ID}@${ORG_DOMAIN}/msp/config.yaml"
 fi

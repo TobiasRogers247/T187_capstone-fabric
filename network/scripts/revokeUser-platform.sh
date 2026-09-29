@@ -3,14 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-
-if [[ -f "${ROOT_DIR}/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "${ROOT_DIR}/.env"
-  set +a
-fi
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
   cat <<EOF
@@ -21,25 +15,6 @@ Revokes a PlatformOrgMSP user identity in ca-platform.
 Example:
   bash network/scripts/revokeUser-platform.sh user-e33a875f-2186-4a4e-aa8b-ecb6d0b953b9 superseded
 EOF
-}
-
-require_command() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "Missing required command: $1" >&2
-    exit 1
-  fi
-}
-
-require_file() {
-  if [[ ! -f "$1" ]]; then
-    echo "Missing required file: $1" >&2
-    exit 1
-  fi
-}
-
-has_files() {
-  local directory="$1"
-  [[ -d "${directory}" ]] && find "${directory}" -maxdepth 1 -type f | read -r _
 }
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -62,7 +37,7 @@ PLATFORM_MSP_DIR="${PLATFORM_ORG_DIR}/msp"
 require_file "${PLATFORM_CA_CERT}"
 require_file "${PLATFORM_MSP_DIR}/config.yaml"
 
-if ! has_files "${PLATFORM_MSP_DIR}/signcerts"; then
+if ! has_signcert "${PLATFORM_MSP_DIR}"; then
   echo "Platform bootstrap is incomplete. Run bash network/scripts/registerEnroll-platform.sh first." >&2
   exit 1
 fi
@@ -83,4 +58,4 @@ fi
 echo "Revoking Platform user ${USER_ID}"
 "${revoke_command[@]}"
 
-echo "Platform user revocation complete."
+echo "Platform user revoked in the CA. Channel MSP revocation requires a CRL update."

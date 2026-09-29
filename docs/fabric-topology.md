@@ -8,12 +8,13 @@ This repository starts with a three-organization Fabric network:
 
 ## Identity Mapping
 
-| Identity type | Org | Issuing CA | Purpose |
-| --- | --- | --- | --- |
-| `platformAdmin` | `PlatformOrgMSP` | `ca-platform` | Administrative actions for the app org |
-| Normal app users | `PlatformOrgMSP` | `ca-platform` | Buyers, sellers, and general platform identities |
-| `auditAdmin` | `AuditOrgMSP` | `ca-audit` | Read/query/reporting identities |
-| `ordererAdmin` / `orderer0` | `OrdererOrgMSP` | `ca-orderer` | Ordering service identities |
+| Identity type               | Org              | Issuing CA    | Purpose                                                                                     |
+| --------------------------- | ---------------- | ------------- | ------------------------------------------------------------------------------------------- |
+| `platformAdmin`             | `PlatformOrgMSP` | `ca-platform` | Administrative actions for the app org                                                      |
+| `backend-service`           | `PlatformOrgMSP` | `ca-platform` | Marketplace writes and user-scoped transaction queries; carries `energyMarket.backend=true` |
+| Normal app users            | `PlatformOrgMSP` | `ca-platform` | Buyers, sellers, and general platform identities                                            |
+| `auditAdmin`                | `AuditOrgMSP`    | `ca-audit`    | Read/query/reporting identities                                                             |
+| `ordererAdmin` / `orderer0` | `OrdererOrgMSP`  | `ca-orderer`  | Ordering service identities                                                                 |
 
 ## Node Layout
 
@@ -39,6 +40,15 @@ AuditOrgMSP
   - `AuditOrgMSP`
 
 `OrdererOrgMSP` provides the ordering service for the channel but is not an application org.
+
+The checked-in Compose files, channel configuration and contract use the fixed
+`capstone.local` domain and the MSP names above. The scripts reject incompatible
+environment overrides; changing topology requires updating those sources together.
+
+Application users access transactions through the authenticated backend. Normal
+user and audit certificates cannot invoke the restricted transaction methods.
+Audit peer operators still hold a copy of the channel ledger; query permissions
+do not hide data from the organisations operating the peers.
 
 ## Where Data Lives
 

@@ -12,6 +12,15 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
   set +a
 fi
 
+# Compose, channel policies and chaincode use this fixed project topology.
+if [[ "${FABRIC_DOMAIN:-capstone.local}" != "capstone.local" \
+  || "${PLATFORM_ORG_MSP:-PlatformOrgMSP}" != "PlatformOrgMSP" \
+  || "${AUDIT_ORG_MSP:-AuditOrgMSP}" != "AuditOrgMSP" \
+  || "${ORDERER_ORG_MSP:-OrdererOrgMSP}" != "OrdererOrgMSP" ]]; then
+  echo "Domain or MSP changes require coordinated Compose, channel and contract changes." >&2
+  exit 1
+fi
+
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "Missing required command: $1" >&2
@@ -40,6 +49,11 @@ register_identity() {
   local name="$3"
   local secret="$4"
   local identity_type="$5"
+  local attributes="${6:-}"
+  local attribute_args=()
+  if [[ -n "${attributes}" ]]; then
+    attribute_args=(--id.attrs "${attributes}")
+  fi
 
   set +e
   local output
@@ -49,6 +63,7 @@ register_identity() {
       --id.name "${name}" \
       --id.secret "${secret}" \
       --id.type "${identity_type}" \
+      "${attribute_args[@]}" \
       --tls.certfiles "${ca_cert}" 2>&1
   )"
   local status=$?

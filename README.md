@@ -26,7 +26,12 @@ T187_capstone-fabric/
 
 ## Current State
 
-This repository is currently a Fabric scaffold.
+This repository contains the Fabric network setup and energy marketplace chaincode.
+Transaction completion and participant-scoped query APIs are documented in
+[the chaincode README](chaincode/energy-market/README.md). For the 0.3.0 fresh
+ledger baseline and backend handoff, see
+[transaction integration](docs/transaction-integration.md).
+The review and planned reset scope are in [Fabric review](docs/fabric-review.md).
 
 It already includes:
 
@@ -85,21 +90,23 @@ The deployed chaincode uses a Platform-only endorsement policy. `AuditOrgMSP`
 approves the chaincode definition and maintains an independent peer for read and
 audit queries, but does not need to endorse normal marketplace writes.
 
-To deploy an approved chaincode upgrade, increment both values in the VM `.env`:
+The planned fresh deployment uses these values in the VM `.env`:
 
 ```text
-FABRIC_CHAINCODE_VERSION=0.2.0
-FABRIC_CHAINCODE_SEQUENCE=2
+FABRIC_CHAINCODE_VERSION=0.3.0
+FABRIC_CHAINCODE_SEQUENCE=1
 ```
 
-Then run:
+The bootstrap command above includes chaincode deployment. For a later approved
+upgrade, set a new version and increment the committed sequence by exactly one,
+then run:
 
 ```bash
 bash network/scripts/deployChaincode.sh
 ```
 
-The target sequence must be greater than the committed sequence. The deployment
-script permits upgrades and rejects a target sequence that is unchanged or lower.
+The deployment script checks that the target sequence is exactly the next
+sequence (`1` for a new channel). Bootstrap does not erase or reset an old network.
 
 `git pull` updates source only. It does not create a channel or deploy chaincode.
 Run the lifecycle script after pulling an approved chaincode change.
@@ -109,3 +116,5 @@ The export script reads the backend endpoint values from `.env`, so shared VM se
 After that bootstrap is in place, you can register a normal Platform user identity with `bash network/scripts/registerUser-platform.sh <enrollment-id> <secret>`.
 
 To revoke a Platform user identity in Fabric CA, use `bash network/scripts/revokeUser-platform.sh <enrollment-id> [reason]`.
+This updates the CA; peer rejection of an already-issued certificate also needs
+a CRL update in the channel MSP. Application deactivation is a separate action.

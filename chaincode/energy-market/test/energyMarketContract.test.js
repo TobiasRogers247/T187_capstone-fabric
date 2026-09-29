@@ -81,7 +81,14 @@ class MockStub {
 }
 
 function createContext() {
-  return { stub: new MockStub() };
+  return {
+    stub: new MockStub(),
+    clientIdentity: {
+      getMSPID: () => "PlatformOrgMSP",
+      assertAttributeValue: (name, value) =>
+        name === "energyMarket.backend" && value === "true",
+    },
+  };
 }
 
 async function createListing(contract, ctx, listingId = "listing-001") {
@@ -134,10 +141,20 @@ test("settles an active listing atomically after the backend handshake", async (
   await createListing(contract, ctx);
 
   const result = JSON.parse(
-    await contract.CompletePurchaseHandshake(ctx, "listing-001", "buyer-001"),
+    await contract.CompletePurchaseHandshake(
+      ctx,
+      "purchase-001",
+      "listing-001",
+      "buyer-001",
+      "buyer-battery-001",
+    ),
   );
   const transaction = JSON.parse(
-    await contract.ReadTransaction(ctx, result.transaction.transactionId),
+    await contract.ReadTransaction(
+      ctx,
+      result.transaction.transactionId,
+      "buyer-001",
+    ),
   );
 
   assert.equal(result.listing.status, "sold");
@@ -204,7 +221,14 @@ test("rejects invalid listing arguments and invalid state transitions", async ()
   await createListing(contract, ctx);
   await contract.CancelListing(ctx, "listing-001", "seller-001");
   await assert.rejects(
-    () => contract.CompletePurchaseHandshake(ctx, "listing-001", "buyer-001"),
+    () =>
+      contract.CompletePurchaseHandshake(
+        ctx,
+        "purchase-001",
+        "listing-001",
+        "buyer-001",
+        "buyer-battery-001",
+      ),
     /must be active; it is cancelled/,
   );
   await assert.rejects(
