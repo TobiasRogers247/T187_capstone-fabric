@@ -97,7 +97,7 @@ backend service identity is enrolled with the test-only
 The planned fresh deployment uses these values in the VM `.env`:
 
 ```text
-FABRIC_CHAINCODE_VERSION=0.4.0
+FABRIC_CHAINCODE_VERSION=0.4.1
 FABRIC_CHAINCODE_SEQUENCE=1
 ```
 

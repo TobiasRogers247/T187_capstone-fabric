@@ -1,4 +1,4 @@
-# Fabric transaction integration (0.4.0)
+# Fabric transaction integration (0.4.1)
 
 This document describes the application-facing boundary for the Fabric
 `EnergyMarketContract`. The contract now owns token wallet value and the
@@ -8,11 +8,11 @@ wallet balances.
 
 ## Contract version and deployment baseline
 
-The source version is `0.4.0`.
+The source version is `0.4.1`.
 
 - A fresh channel deployment uses chaincode sequence `1`.
-- An existing channel running `0.3.0` must install the `0.4.0` package and
-  approve/commit it as sequence `2`.
+- The current VM channel runs `0.4.0` at sequence `2`; it must install the
+  `0.4.1` package and approve/commit it as sequence `3`.
 - The full deployment notes and current VM state are in
   [`docs/wallet-integration.md`](wallet-integration.md).
 

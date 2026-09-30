@@ -321,6 +321,7 @@ test("creates one wallet per registered user and makes issuance idempotent", asy
 
   assert.deepEqual(retry, wallet);
   assert.equal(issued.wallet.availableBalanceTokens, 100);
+  assert.match(issued.fabricTransactionId, /^tx-/u);
   assert.deepEqual(issueRetry, issued);
   assert.deepEqual(
     JSON.parse(await contract.ReadWalletByOwner(ctx, "buyer-001")),

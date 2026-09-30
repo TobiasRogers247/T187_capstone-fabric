@@ -127,6 +127,7 @@ interface WalletOperationRecord {
 interface WalletIssueReceipt {
   operation: "issue";
   reference: string;
+  fabricTransactionId: string;
   wallet: TokenWallet;
   ledgerEntry: WalletLedgerEntry;
 }
@@ -486,6 +487,7 @@ export class EnergyMarketContract extends Contract {
     const receipt: WalletIssueReceipt = {
       operation: "issue",
       reference,
+      fabricTransactionId: ctx.stub.getTxID(),
       wallet: updatedWallet,
       ledgerEntry,
     };

@@ -6,8 +6,9 @@ wallet entries, final listing status, energy amount, token-unit price, Fabric
 timestamps, and completed settlement records. MongoDB owns UI data and operational
 projections only.
 
-Version 0.4.0 adds the token wallet and settlement state. It targets the fresh
-ledger baseline described below or a deliberate chaincode upgrade from 0.3.0.
+Version 0.4.0 added the token wallet and settlement state. Version 0.4.1 adds
+the Fabric transaction ID to issuance receipts and targets a deliberate
+upgrade from 0.4.0.
 
 ## Listing State
 

@@ -1,4 +1,4 @@
-# Fabric wallet integration (0.4.0)
+# Fabric wallet integration (0.4.1)
 
 The `energy-market` chaincode now contains the token wallet used to settle
 whole-energy marketplace trades. Token amounts are positive whole integers and
@@ -93,13 +93,13 @@ flows should not create holds that can be cancelled without settlement.
 
 ## Deployment
 
-The package version is `0.4.0`. A fresh channel uses sequence `1`. The existing
-VM ledger currently has `energy-market` version `0.3.0`, sequence `1`, so its
-upgrade must use version `0.4.0` and sequence `2`:
+The package version is `0.4.1`. A fresh channel uses sequence `1`. The existing
+VM ledger currently has `energy-market` version `0.4.0`, sequence `2`, so its
+upgrade must use version `0.4.1` and sequence `3`:
 
 ```bash
 cd ~/code/T187_capstone-fabric
-FABRIC_CHAINCODE_VERSION=0.4.0 FABRIC_CHAINCODE_SEQUENCE=2 \
+FABRIC_CHAINCODE_VERSION=0.4.1 FABRIC_CHAINCODE_SEQUENCE=3 \
   bash network/scripts/deployChaincode.sh
 ```
 
