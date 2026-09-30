@@ -1,109 +1,116 @@
-# Fabric transaction integration (0.3.0)
+# Fabric transaction integration (0.4.0)
 
-This change implements the ledger portion of completed purchases. Handshake
-decisions, reservations, receiving-capacity checks and actual battery balance
-updates remain application responsibilities. The VM has not been upgraded by
-changing these source files.
+This document describes the application-facing boundary for the Fabric
+`EnergyMarketContract`. The contract now owns token wallet value and the
+token history used when an energy purchase settles. MongoDB may project the
+results for application reads, but it must not be treated as the source of
+wallet balances.
 
-## Fresh network baseline
+## Contract version and deployment baseline
 
-The 0.3.0 contract is intended for the planned fresh ledger. It writes the current
-transaction schema and buyer/seller history indexes together. It does not migrate
-or index the old test records. Do not deploy it over the old test ledger and expect
-those records to appear in user history.
+The source version is `0.4.0`.
 
-The transaction methods are:
+- A fresh channel deployment uses chaincode sequence `1`.
+- An existing channel running `0.3.0` must install the `0.4.0` package and
+  approve/commit it as sequence `2`.
+- The full deployment notes and current VM state are in
+  [`docs/wallet-integration.md`](wallet-integration.md).
 
-| Operation                            | Ordered arguments after `ctx`                           |
-| ------------------------------------ | ------------------------------------------------------- |
-| `CompletePurchaseHandshake` (submit) | `transactionId`, `listingId`, `buyerId`, `buyerAssetId` |
-| `ReadTransaction` (evaluate)         | `transactionId`, `requestingUserId`                     |
-| `ReadTransactionsForUser` (evaluate) | `requestingUserId`, `pageSize`, `bookmark`              |
+Do not commit generated packages, certificates, private keys, or runtime
+artifacts.
 
-Listing method signatures are unchanged, but all writes now require the
-backend service certificate role. New listings must also have a positive, safe
-integer total after rounding; invalid totals are rejected at creation as well as
-completion.
+## Contract transactions
 
-After the separately scheduled Fabric and MongoDB reset:
+All arguments are strings at the Fabric Gateway boundary. Numeric token
+amounts are whole, positive, safe integers and are validated by chaincode.
 
-1. Pull the reviewed source and prepare the VM's private `.env`. Use chaincode
-   version `0.3.0` and sequence `1` for the new channel.
-2. Run `bash network/scripts/bootstrapNetwork.sh`. This generates new CA/MSP/TLS
-   material, enrolls the backend with `energyMarket.backend=true`, creates the
-   channel and deploys the contract. It does not perform the reset itself.
-3. Use `exportBackendEnv.sh` to replace the backend's private Fabric configuration.
-   Restart the backend to load the new certificate, key and trust roots. Do not
-   reuse credentials or queued submissions from the removed network.
-4. Connect the updated application adapter and validate one complete purchase
-   before enabling marketplace writes.
+| Transaction | Arguments | Purpose |
+| --- | --- | --- |
+| `CreateWallet` | `walletId, ownerUserId, ownerFabricEnrollmentId, ownerMspId` | Create the single wallet mapped to an application user. |
+| `ReadWallet` | `walletId` | Read the wallet summary. |
+| `ReadWalletByOwner` | `ownerUserId` | Read the mapped wallet. |
+| `ReadWalletBalance` | `walletId` | Read available, held, and derived total tokens. |
+| `ReadWalletHistory` | `walletId, pageSize, bookmark, entryType` | Read immutable wallet entries with deterministic pagination. |
+| `IssueTokens` | `walletId, amountTokens, reference` | Test-environment issuance by the authorised issuer identity. |
+| `HoldTokens` | `walletId, amountTokens, transactionId, listingId, idempotencyKey` | Move available tokens into an active hold before purchase acceptance. |
+| `SettleEnergyPurchase` | `buyerWalletId, sellerWalletId, holdId, transactionId, listingId, energyAmountKWh, priceTokensPerKWh, totalTokens, buyerAssetId` | Consume the buyer hold, credit the seller, and complete the energy transaction atomically. |
+| `ReadSettlement` | `transactionId` | Look up an existing settlement receipt before retrying an unknown request. |
+| `ReadTransaction` | `transactionId, requestingUserId` | Read a completed energy transaction for its buyer or seller. |
+| `ReadTransactionsForUser` | `requestingUserId, pageSize, bookmark` | Read completed transactions for a user. |
+| `ReadListing` | `listingId` | Read one listing. |
+| `ReadListings` | `status` | Read listings filtered by `active`, `cancelled`, `sold`, or `all`. |
 
-This source update does not reset either database. The future reset preparation
-and remaining runtime checks are in [Fabric review](fabric-review.md).
+`CompletePurchaseHandshake` remains only as a compatibility-shaped transaction
+name and is deliberately rejected. Application code must use
+`SettleEnergyPurchase`, so a listing cannot be marked sold without the token
+transfer.
 
-## Prompt for the application repository
+The current testing scope intentionally has no public release/refund endpoint
+and no freeze/unfreeze endpoint. Wallet status is limited to `active` and
+`closed`.
 
-Implement the backend Fabric transaction adapter against the 0.3.0 contract in
-`T187_capstone-fabric`. Keep all changes in the application repository:
+## Authorization
 
-- Authenticate the HTTP user and derive their ID from the server session.
-  Supply this as `requestingUserId` for all transaction queries; never trust a
-  browser-supplied identity. Fabric's shared service identity has no independent
-  knowledge of which HTTP user is logged in.
-- Start settlement only after seller acceptance makes the handshake final.
-  Validate buyer ownership of the receiving battery and reserve its capacity.
-  Preserve the seller's existing listing reservation.
-- Persist a stable application transaction ID and the immutable completion
-  arguments before calling `CompletePurchaseHandshake`. Parse its
-  `{ listing, transaction }` response and check IDs, parties, both battery IDs,
-  energy, price and total against the accepted agreement.
-- Record the original `fabricTransactionId` separately from the application
-  `transactionId`. Use the latter for `ReadTransaction` and exact retries.
-- Only a confirmed successful Fabric commit authorizes the MongoDB completion
-  step: atomically subtract seller kWh, add buyer kWh, consume reservations and
-  mark the application transaction completed. Guard this step so it happens
-  once even after retries or a process restart.
-- When commit outcome is uncertain, hold reservations and reconcile by the
-  same application ID. A not-found response from one read is not proof that an
-  in-flight transaction cannot still commit. Do not create a replacement ID or
-  release reservations merely because the client timed out.
-- Wire individual transaction details and user history through the new read
-  methods. Keep the user and page size unchanged while following bookmarks;
-  stop on an empty bookmark. Return no unfiltered/global transaction feed to users.
-- Coordinate token rounding with the contract's decimal rounding rule. The
-  ledger stores whole tokens and rejects totals outside the safe integer range.
+The backend Fabric enrollment is the controlled invoker for application
+wallet operations. The chaincode requires the invoker to have
+`energyMarket.backend=true`.
 
-No contract call adjusts battery availability, transfers token balances, or
-attests to physical delivery. The ledger records the final agreement and its
-source and destination battery references.
+`IssueTokens` additionally requires `energyMarket.issuer=true`. This is the
+temporary testing path used by the token buttons; it is not a money purchase
+flow and must not be exposed as arbitrary client-controlled issuance in
+production.
+
+The backend must map its authenticated application user to the registered
+Fabric enrollment and must not accept arbitrary wallet owners, seller IDs,
+buyer IDs, or balances from the browser.
+
+## Application adapter behavior
+
+The backend Fabric adapter should:
+
+1. Create or read the user wallet through the contract.
+2. Use `ReadWallet` or `ReadWalletByOwner` for the frontend wallet display.
+3. Call `IssueTokens` for the test-only token button with a deterministic
+   development reference.
+4. Validate the listing, seller, kWh amount, price, and total before calling
+   `HoldTokens`.
+5. Treat a successful hold as the funded purchase state.
+6. Call `SettleEnergyPurchase` only after the seller accepts and the terms are
+   unchanged.
+7. Project the returned wallet/settlement data to MongoDB only after Fabric
+   confirms the transaction.
+
+Never retry `IssueTokens`, `HoldTokens`, or `SettleEnergyPurchase` blindly.
+The reference/idempotency keys make duplicate requests safe, but an unknown
+submission result must first be checked with `ReadSettlement` (and the
+relevant wallet/hold read) before another money-changing submission.
 
 ## Response and failure contract
 
-All successful results are JSON strings. Parse them once in the Fabric adapter.
+The adapter should parse Fabric JSON responses and preserve these outcomes:
 
-| Operation                   | Parsed result                                                  |
-| --------------------------- | -------------------------------------------------------------- |
-| `CompletePurchaseHandshake` | `{ listing, transaction }`, including on an identical retry    |
-| `ReadTransaction`           | One stored transaction in the current schema                   |
-| `ReadTransactionsForUser`   | `{ transactions, bookmark }`; pass the bookmark back unchanged |
+- A deterministic chaincode validation error is a definitive failure; return
+  it to the application without retrying the value-changing operation.
+- A gateway timeout, lost connection, or ambiguous submit response is an
+  unknown outcome; do not assume that no transaction committed.
+- For settlement, call `ReadSettlement(transactionId)`. If a receipt exists,
+  treat that receipt as authoritative and project the completed state. If it
+  does not exist, the adapter may retry with the same deterministic terms and
+  idempotency data according to the application retry policy.
 
-Validation and authorization failures reject the call before ledger writes.
-An unavailable transaction and one belonging to another user both return
-`Transaction not found or not accessible`. Other failures include an unauthorized
-service identity, invalid arguments, a conflicting transaction ID, or a listing
-that is no longer active. Keep raw infrastructure errors out of HTTP responses.
+The settlement receipt includes the Fabric transaction ID, settlement ID,
+buyer and seller wallets, hold ID, marketplace transaction/listing IDs,
+energy amount, price, and total tokens.
 
-A successful proposal response alone is not a successful commit. Commit failures
-and transport timeouts need the reconciliation behavior described above; do not
-treat either as permission to repeat the battery transfer.
+## Verification
 
-## Verification and reference
+From `chaincode/energy-market`:
 
-From `chaincode/energy-market`, run `npm run typecheck`, `npm run build`, and the
-existing `npm test` suite. Validate shell scripts with `bash -n` before using them
-on the VM. Source-level checks do not verify a fresh network bootstrap or
-concurrent commit outcomes on peers.
+```bash
+npm test
+npm run build
+```
 
-The implementation uses Fabric's documented
-[certificate attributes](https://hyperledger-fabric-ca.readthedocs.io/en/latest/users-guide.html),
-and [composite keys and read-only pagination](https://hyperledger.github.io/fabric-chaincode-node/main/api/fabric-shim.ChaincodeStub.html).
+The test suite covers wallet creation, owner and issuer authorization,
+idempotent issuance and holds, insufficient funds, settlement retries, exact
+buyer debit/seller credit behavior, and immutable-history pagination.

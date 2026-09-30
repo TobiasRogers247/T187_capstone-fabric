@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   Context,
   Contract,
@@ -57,6 +59,122 @@ interface UserAccount {
   updatedAt: string;
   deactivatedAt: string | null;
 }
+
+type WalletStatus = "active" | "closed";
+type WalletLedgerEntryType =
+  | "issue"
+  | "hold"
+  | "settlementDebit"
+  | "settlementCredit";
+
+interface TokenWallet {
+  docType: "tokenWallet";
+  walletId: string;
+  ownerUserId: string;
+  ownerFabricEnrollmentId: string;
+  ownerMspId: string;
+  status: WalletStatus;
+  availableBalanceTokens: number;
+  heldBalanceTokens: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface WalletLedgerEntry {
+  docType: "walletLedgerEntry";
+  entryId: string;
+  walletId: string;
+  entryType: WalletLedgerEntryType;
+  amountTokens: number;
+  sourceWalletId: string | null;
+  destinationWalletId: string | null;
+  transactionId: string | null;
+  listingId: string | null;
+  holdId: string | null;
+  settlementId: string | null;
+  reference: string;
+  actingFabricIdentity: string;
+  actingRole: string;
+  fabricTransactionId: string;
+  timestamp: string;
+  resultingAvailableBalanceTokens: number;
+  resultingHeldBalanceTokens: number;
+}
+
+interface TokenHold {
+  docType: "tokenHold";
+  holdId: string;
+  walletId: string;
+  amountTokens: number;
+  transactionId: string;
+  listingId: string;
+  idempotencyKey: string;
+  status: "active" | "consumed";
+  settlementId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface WalletOperationRecord {
+  docType: "walletOperation";
+  operation: "issue" | "hold";
+  reference: string;
+  walletId: string;
+  amountTokens: number;
+  result: string;
+}
+
+interface WalletIssueReceipt {
+  operation: "issue";
+  reference: string;
+  wallet: TokenWallet;
+  ledgerEntry: WalletLedgerEntry;
+}
+
+interface WalletHoldReceipt {
+  operation: "hold";
+  idempotencyKey: string;
+  hold: TokenHold;
+  wallet: TokenWallet;
+  ledgerEntry: WalletLedgerEntry;
+}
+
+interface WalletSettlementReceipt {
+  docType: "walletSettlement";
+  settlementId: string;
+  transactionId: string;
+  listingId: string;
+  buyerWalletId: string;
+  sellerWalletId: string;
+  holdId: string;
+  energyAmountKWh: number;
+  priceTokensPerKWh: number;
+  totalTokens: number;
+  buyerAssetId: string;
+  status: "completed";
+  fabricTransactionId: string;
+  completedAt: string;
+  buyerWallet: TokenWallet;
+  sellerWallet: TokenWallet;
+  listing: EnergyListing;
+  transaction: EnergyTransaction;
+  buyerLedgerEntry: WalletLedgerEntry;
+  sellerLedgerEntry: WalletLedgerEntry;
+}
+
+interface WalletHistoryPage {
+  walletId: string;
+  entries: WalletLedgerEntry[];
+  bookmark: string;
+}
+
+const maxSafeTokenAmount = BigInt(Number.MAX_SAFE_INTEGER);
+const walletLedgerEntryTypes: WalletLedgerEntryType[] = [
+  "issue",
+  "hold",
+  "settlementDebit",
+  "settlementCredit",
+];
 
 @Info({
   title: "energy-market",
@@ -128,6 +246,681 @@ export class EnergyMarketContract extends Contract {
     await ctx.stub.putState(userKey, Buffer.from(JSON.stringify(updatedUser)));
 
     return JSON.stringify(updatedUser);
+  }
+
+  @Transaction()
+  @Returns("string")
+  public async CreateWallet(
+    ctx: Context,
+    walletId: string,
+    ownerUserId: string,
+    ownerFabricEnrollmentId: string,
+    ownerMspId: string,
+  ): Promise<string> {
+    this.requireBackendService(ctx);
+    this.requireIdentifier("walletId", walletId);
+    this.requireIdentifier("ownerUserId", ownerUserId);
+    this.requireIdentifier("ownerFabricEnrollmentId", ownerFabricEnrollmentId);
+    this.requireIdentifier("ownerMspId", ownerMspId);
+
+    const user = await this.readUser(
+      ctx,
+      this.getUserKey(ctx, ownerUserId),
+      ownerUserId,
+    );
+    if (user.fabricEnrollmentId !== ownerFabricEnrollmentId) {
+      throw new Error(
+        "Wallet owner does not match the registered Fabric enrollment",
+      );
+    }
+    if (ownerMspId !== ctx.clientIdentity.getMSPID()) {
+      throw new Error("Wallet owner MSP does not match the Platform MSP");
+    }
+
+    const walletKey = this.getWalletKey(ctx, walletId);
+    const existingWalletState = await ctx.stub.getState(walletKey);
+    if (existingWalletState.length > 0) {
+      const existingWallet = JSON.parse(
+        existingWalletState.toString(),
+      ) as TokenWallet;
+      if (
+        existingWallet.ownerUserId === ownerUserId &&
+        existingWallet.ownerFabricEnrollmentId === ownerFabricEnrollmentId &&
+        existingWallet.ownerMspId === ownerMspId
+      ) {
+        return JSON.stringify(existingWallet);
+      }
+
+      throw new Error(`Wallet ${walletId} already exists`);
+    }
+
+    const ownerIndexKey = this.getWalletOwnerKey(ctx, ownerUserId);
+    const existingOwnerState = await ctx.stub.getState(ownerIndexKey);
+    if (existingOwnerState.length > 0) {
+      const existingWalletId = existingOwnerState.toString();
+      throw new Error(
+        `User ${ownerUserId} already owns wallet ${existingWalletId}`,
+      );
+    }
+
+    const timestamp = this.getTimestampIso(ctx);
+    const wallet: TokenWallet = {
+      docType: "tokenWallet",
+      walletId,
+      ownerUserId,
+      ownerFabricEnrollmentId,
+      ownerMspId,
+      status: "active",
+      availableBalanceTokens: 0,
+      heldBalanceTokens: 0,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    await ctx.stub.putState(walletKey, Buffer.from(JSON.stringify(wallet)));
+    await ctx.stub.putState(ownerIndexKey, Buffer.from(walletId));
+
+    return JSON.stringify(wallet);
+  }
+
+  @Transaction(false)
+  @Returns("string")
+  public async ReadWallet(ctx: Context, walletId: string): Promise<string> {
+    this.requireBackendService(ctx);
+    this.requireIdentifier("walletId", walletId);
+
+    return JSON.stringify(await this.readTokenWallet(ctx, walletId));
+  }
+
+  @Transaction(false)
+  @Returns("string")
+  public async ReadWalletByOwner(
+    ctx: Context,
+    ownerUserId: string,
+  ): Promise<string> {
+    this.requireBackendService(ctx);
+    this.requireIdentifier("ownerUserId", ownerUserId);
+
+    const ownerState = await ctx.stub.getState(
+      this.getWalletOwnerKey(ctx, ownerUserId),
+    );
+    if (ownerState.length === 0) {
+      throw new Error(`Wallet for user ${ownerUserId} does not exist`);
+    }
+
+    return JSON.stringify(
+      await this.readTokenWallet(ctx, ownerState.toString()),
+    );
+  }
+
+  @Transaction(false)
+  @Returns("string")
+  public async ReadWalletBalance(
+    ctx: Context,
+    walletId: string,
+  ): Promise<string> {
+    this.requireBackendService(ctx);
+    this.requireIdentifier("walletId", walletId);
+
+    const wallet = await this.readTokenWallet(ctx, walletId);
+    return JSON.stringify(this.toWalletBalance(wallet));
+  }
+
+  @Transaction(false)
+  @Returns("string")
+  public async ReadWalletHistory(
+    ctx: Context,
+    walletId: string,
+    pageSize: string,
+    bookmark: string,
+    entryType: string = "",
+  ): Promise<string> {
+    this.requireBackendService(ctx);
+    this.requireIdentifier("walletId", walletId);
+    const size = this.parsePositiveInteger("pageSize", pageSize);
+    if (size > 100) {
+      throw new Error("pageSize must not exceed 100");
+    }
+    if (typeof bookmark !== "string") {
+      throw new Error("bookmark must be a string");
+    }
+
+    await this.readTokenWallet(ctx, walletId);
+    const normalizedEntryType = entryType.trim();
+    if (
+      normalizedEntryType &&
+      !walletLedgerEntryTypes.includes(
+        normalizedEntryType as WalletLedgerEntryType,
+      )
+    ) {
+      throw new Error("entryType is not supported");
+    }
+
+    const attributes = normalizedEntryType
+      ? [walletId, normalizedEntryType]
+      : [walletId];
+    const { iterator, metadata } =
+      await ctx.stub.getStateByPartialCompositeKeyWithPagination(
+        "tokenWalletLedger",
+        attributes,
+        size,
+        bookmark,
+      );
+    const entries: WalletLedgerEntry[] = [];
+
+    try {
+      while (true) {
+        const result = await iterator.next();
+        if (result.done) {
+          break;
+        }
+
+        entries.push(
+          JSON.parse(result.value.value.toString()) as WalletLedgerEntry,
+        );
+      }
+    } finally {
+      await iterator.close();
+    }
+
+    const page: WalletHistoryPage = {
+      walletId,
+      entries,
+      bookmark: metadata.bookmark,
+    };
+    return JSON.stringify(page);
+  }
+
+  @Transaction()
+  @Returns("string")
+  public async IssueTokens(
+    ctx: Context,
+    walletId: string,
+    amountTokens: string,
+    reference: string,
+  ): Promise<string> {
+    this.requireTokenIssuer(ctx);
+    this.requireIdentifier("walletId", walletId);
+    const amount = this.parsePositiveInteger("amountTokens", amountTokens);
+    this.requireReference("reference", reference);
+
+    const operationKey = this.getWalletOperationKey(ctx, "issue", reference);
+    const existingOperationState = await ctx.stub.getState(operationKey);
+    if (existingOperationState.length > 0) {
+      const existingOperation = JSON.parse(
+        existingOperationState.toString(),
+      ) as WalletOperationRecord;
+      if (
+        existingOperation.walletId !== walletId ||
+        existingOperation.amountTokens !== amount
+      ) {
+        throw new Error("Issuance reference is already used differently");
+      }
+
+      return existingOperation.result;
+    }
+
+    const wallet = await this.getActiveWallet(ctx, walletId);
+    const updatedWallet: TokenWallet = {
+      ...wallet,
+      availableBalanceTokens: this.addTokenAmounts(
+        wallet.availableBalanceTokens,
+        amount,
+      ),
+      updatedAt: this.getTimestampIso(ctx),
+    };
+    const ledgerEntry = this.buildWalletLedgerEntry(
+      ctx,
+      updatedWallet,
+      "issue",
+      amount,
+      `issue-${this.digest(reference)}`,
+      reference,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "issuer",
+    );
+    const receipt: WalletIssueReceipt = {
+      operation: "issue",
+      reference,
+      wallet: updatedWallet,
+      ledgerEntry,
+    };
+    const result = JSON.stringify(receipt);
+    const operation: WalletOperationRecord = {
+      docType: "walletOperation",
+      operation: "issue",
+      reference,
+      walletId,
+      amountTokens: amount,
+      result,
+    };
+
+    await ctx.stub.putState(
+      this.getWalletKey(ctx, walletId),
+      Buffer.from(JSON.stringify(updatedWallet)),
+    );
+    await this.putWalletLedgerEntry(ctx, ledgerEntry);
+    await ctx.stub.putState(
+      operationKey,
+      Buffer.from(JSON.stringify(operation)),
+    );
+
+    return result;
+  }
+
+  @Transaction()
+  @Returns("string")
+  public async HoldTokens(
+    ctx: Context,
+    walletId: string,
+    amountTokens: string,
+    transactionId: string,
+    listingId: string,
+    idempotencyKey: string,
+  ): Promise<string> {
+    this.requireBackendService(ctx);
+    this.requireIdentifier("walletId", walletId);
+    this.requireIdentifier("transactionId", transactionId);
+    this.requireIdentifier("listingId", listingId);
+    this.requireReference("idempotencyKey", idempotencyKey);
+    const amount = this.parsePositiveInteger("amountTokens", amountTokens);
+
+    const operationKey = this.getWalletOperationKey(
+      ctx,
+      "hold",
+      idempotencyKey,
+    );
+    const existingOperationState = await ctx.stub.getState(operationKey);
+    if (existingOperationState.length > 0) {
+      const existingOperation = JSON.parse(
+        existingOperationState.toString(),
+      ) as WalletOperationRecord;
+      if (
+        existingOperation.walletId !== walletId ||
+        existingOperation.amountTokens !== amount
+      ) {
+        throw new Error("Hold idempotency key is already used differently");
+      }
+
+      const existingHoldReceipt = JSON.parse(
+        existingOperation.result,
+      ) as WalletHoldReceipt;
+      if (
+        existingHoldReceipt.hold.transactionId !== transactionId ||
+        existingHoldReceipt.hold.listingId !== listingId ||
+        existingHoldReceipt.hold.idempotencyKey !== idempotencyKey
+      ) {
+        throw new Error("Hold idempotency key is already used differently");
+      }
+
+      return existingOperation.result;
+    }
+
+    const holdId = `hold-${this.digest(transactionId)}`;
+    const holdKey = this.getWalletHoldKey(ctx, holdId);
+    const existingHoldState = await ctx.stub.getState(holdKey);
+    if (existingHoldState.length > 0) {
+      const existingHold = JSON.parse(
+        existingHoldState.toString(),
+      ) as TokenHold;
+      if (
+        existingHold.walletId === walletId &&
+        existingHold.amountTokens === amount &&
+        existingHold.transactionId === transactionId &&
+        existingHold.listingId === listingId &&
+        existingHold.idempotencyKey === idempotencyKey
+      ) {
+        throw new Error(
+          "Hold exists but its idempotency record is missing; reconcile before retrying",
+        );
+      }
+
+      throw new Error(`Transaction ${transactionId} already has a hold`);
+    }
+
+    await this.getActiveListing(ctx, listingId);
+    const wallet = await this.getActiveWallet(ctx, walletId);
+    if (wallet.availableBalanceTokens < amount) {
+      throw new Error("Insufficient available token balance");
+    }
+
+    const updatedWallet: TokenWallet = {
+      ...wallet,
+      availableBalanceTokens: this.subtractTokenAmounts(
+        wallet.availableBalanceTokens,
+        amount,
+      ),
+      heldBalanceTokens: this.addTokenAmounts(wallet.heldBalanceTokens, amount),
+      updatedAt: this.getTimestampIso(ctx),
+    };
+    const hold: TokenHold = {
+      docType: "tokenHold",
+      holdId,
+      walletId,
+      amountTokens: amount,
+      transactionId,
+      listingId,
+      idempotencyKey,
+      status: "active",
+      settlementId: null,
+      createdAt: updatedWallet.updatedAt,
+      updatedAt: updatedWallet.updatedAt,
+    };
+    const ledgerEntry = this.buildWalletLedgerEntry(
+      ctx,
+      updatedWallet,
+      "hold",
+      amount,
+      `hold-${this.digest(idempotencyKey)}`,
+      idempotencyKey,
+      null,
+      null,
+      transactionId,
+      listingId,
+      holdId,
+      "backend",
+    );
+    const receipt: WalletHoldReceipt = {
+      operation: "hold",
+      idempotencyKey,
+      hold,
+      wallet: updatedWallet,
+      ledgerEntry,
+    };
+    const result = JSON.stringify(receipt);
+    const operation: WalletOperationRecord = {
+      docType: "walletOperation",
+      operation: "hold",
+      reference: idempotencyKey,
+      walletId,
+      amountTokens: amount,
+      result,
+    };
+
+    await ctx.stub.putState(
+      this.getWalletKey(ctx, walletId),
+      Buffer.from(JSON.stringify(updatedWallet)),
+    );
+    await ctx.stub.putState(holdKey, Buffer.from(JSON.stringify(hold)));
+    await this.putWalletLedgerEntry(ctx, ledgerEntry);
+    await ctx.stub.putState(
+      operationKey,
+      Buffer.from(JSON.stringify(operation)),
+    );
+
+    return result;
+  }
+
+  @Transaction()
+  @Returns("string")
+  public async SettleEnergyPurchase(
+    ctx: Context,
+    buyerWalletId: string,
+    sellerWalletId: string,
+    holdId: string,
+    transactionId: string,
+    listingId: string,
+    energyAmountKWh: string,
+    priceTokensPerKWh: string,
+    totalTokens: string,
+    buyerAssetId: string = "",
+  ): Promise<string> {
+    this.requireBackendService(ctx);
+    this.requireIdentifier("buyerWalletId", buyerWalletId);
+    this.requireIdentifier("sellerWalletId", sellerWalletId);
+    this.requireIdentifier("holdId", holdId);
+    this.requireIdentifier("transactionId", transactionId);
+    this.requireIdentifier("listingId", listingId);
+    const parsedEnergyAmountKWh = this.parsePositiveQuantity(
+      "energyAmountKWh",
+      energyAmountKWh,
+    );
+    const parsedPriceTokensPerKWh = this.parsePositiveInteger(
+      "priceTokensPerKWh",
+      priceTokensPerKWh,
+    );
+    const parsedTotalTokens = this.parsePositiveInteger(
+      "totalTokens",
+      totalTokens,
+    );
+    if (buyerAssetId) {
+      this.requireIdentifier("buyerAssetId", buyerAssetId);
+    }
+
+    const settlementKey = this.getWalletSettlementKey(ctx, transactionId);
+    const existingSettlementState = await ctx.stub.getState(settlementKey);
+    if (existingSettlementState.length > 0) {
+      const existingSettlement = JSON.parse(
+        existingSettlementState.toString(),
+      ) as WalletSettlementReceipt;
+      this.assertSettlementRequestMatches(existingSettlement, {
+        buyerWalletId,
+        sellerWalletId,
+        holdId,
+        transactionId,
+        listingId,
+        energyAmountKWh: parsedEnergyAmountKWh,
+        priceTokensPerKWh: parsedPriceTokensPerKWh,
+        totalTokens: parsedTotalTokens,
+        buyerAssetId,
+      });
+      return JSON.stringify(existingSettlement);
+    }
+
+    const holdState = await ctx.stub.getState(
+      this.getWalletHoldKey(ctx, holdId),
+    );
+    if (holdState.length === 0) {
+      throw new Error(`Hold ${holdId} does not exist`);
+    }
+    const hold = JSON.parse(holdState.toString()) as TokenHold;
+    if (hold.status !== "active") {
+      throw new Error(`Hold ${holdId} has already been consumed`);
+    }
+    if (
+      hold.walletId !== buyerWalletId ||
+      hold.transactionId !== transactionId ||
+      hold.listingId !== listingId ||
+      hold.amountTokens !== parsedTotalTokens
+    ) {
+      throw new Error("Settlement does not match the active hold");
+    }
+
+    const buyerWallet = await this.getActiveWallet(ctx, buyerWalletId);
+    const sellerWallet = await this.getActiveWallet(ctx, sellerWalletId);
+    if (buyerWalletId === sellerWalletId) {
+      throw new Error("Buyer and seller wallets must differ");
+    }
+    if (buyerWallet.ownerUserId === sellerWallet.ownerUserId) {
+      throw new Error("Buyer and seller users must differ");
+    }
+
+    const listing = await this.getActiveListing(ctx, listingId);
+    if (sellerWallet.ownerUserId !== listing.userId) {
+      throw new Error("Seller wallet does not own the listing");
+    }
+    if (parsedEnergyAmountKWh !== listing.energyKWh) {
+      throw new Error("Settlement energy does not match the listing");
+    }
+    if (parsedPriceTokensPerKWh !== listing.priceTokensPerKWh) {
+      throw new Error("Settlement price does not match the listing");
+    }
+    if (
+      this.calculateTotalTokens(
+        listing.energyKWh,
+        listing.priceTokensPerKWh,
+      ) !== parsedTotalTokens
+    ) {
+      throw new Error("Settlement total does not match the listing");
+    }
+
+    const existingTransactionState = await ctx.stub.getState(
+      this.getTransactionKey(ctx, transactionId),
+    );
+    if (existingTransactionState.length > 0) {
+      throw new Error(`Transaction ${transactionId} already exists`);
+    }
+
+    const settlementId = `settlement-${this.digest(transactionId)}`;
+    const completedAt = this.getTimestampIso(ctx);
+    const buyerUpdatedWallet: TokenWallet = {
+      ...buyerWallet,
+      heldBalanceTokens: this.subtractTokenAmounts(
+        buyerWallet.heldBalanceTokens,
+        parsedTotalTokens,
+      ),
+      updatedAt: completedAt,
+    };
+    const sellerUpdatedWallet: TokenWallet = {
+      ...sellerWallet,
+      availableBalanceTokens: this.addTokenAmounts(
+        sellerWallet.availableBalanceTokens,
+        parsedTotalTokens,
+      ),
+      updatedAt: completedAt,
+    };
+    const soldListing: EnergyListing = {
+      ...listing,
+      status: "sold",
+      closedAt: completedAt,
+      transactionId,
+    };
+    const transaction: EnergyTransaction = {
+      docType: "energyTransaction",
+      schemaVersion: 2,
+      transactionId,
+      fabricTransactionId: ctx.stub.getTxID(),
+      listingId,
+      sellerId: listing.userId,
+      buyerId: buyerWallet.ownerUserId,
+      assetId: listing.assetId,
+      buyerAssetId,
+      energyKWh: listing.energyKWh,
+      priceTokensPerKWh: listing.priceTokensPerKWh,
+      totalTokens: parsedTotalTokens,
+      status: "completed",
+      completedAt,
+    };
+    const buyerLedgerEntry = this.buildWalletLedgerEntry(
+      ctx,
+      buyerUpdatedWallet,
+      "settlementDebit",
+      parsedTotalTokens,
+      `settlement-${this.digest(transactionId)}-debit`,
+      transactionId,
+      buyerWalletId,
+      sellerWalletId,
+      transactionId,
+      listingId,
+      holdId,
+      "backend",
+      settlementId,
+    );
+    const sellerLedgerEntry = this.buildWalletLedgerEntry(
+      ctx,
+      sellerUpdatedWallet,
+      "settlementCredit",
+      parsedTotalTokens,
+      `settlement-${this.digest(transactionId)}-credit`,
+      transactionId,
+      buyerWalletId,
+      sellerWalletId,
+      transactionId,
+      listingId,
+      holdId,
+      "backend",
+      settlementId,
+    );
+    const consumedHold: TokenHold = {
+      ...hold,
+      status: "consumed",
+      settlementId,
+      updatedAt: completedAt,
+    };
+    const receipt: WalletSettlementReceipt = {
+      docType: "walletSettlement",
+      settlementId,
+      transactionId,
+      listingId,
+      buyerWalletId,
+      sellerWalletId,
+      holdId,
+      energyAmountKWh: parsedEnergyAmountKWh,
+      priceTokensPerKWh: parsedPriceTokensPerKWh,
+      totalTokens: parsedTotalTokens,
+      buyerAssetId,
+      status: "completed",
+      fabricTransactionId: transaction.fabricTransactionId,
+      completedAt,
+      buyerWallet: buyerUpdatedWallet,
+      sellerWallet: sellerUpdatedWallet,
+      listing: soldListing,
+      transaction,
+      buyerLedgerEntry,
+      sellerLedgerEntry,
+    };
+
+    await ctx.stub.putState(
+      this.getWalletKey(ctx, buyerWalletId),
+      Buffer.from(JSON.stringify(buyerUpdatedWallet)),
+    );
+    await ctx.stub.putState(
+      this.getWalletKey(ctx, sellerWalletId),
+      Buffer.from(JSON.stringify(sellerUpdatedWallet)),
+    );
+    await ctx.stub.putState(
+      this.getWalletHoldKey(ctx, holdId),
+      Buffer.from(JSON.stringify(consumedHold)),
+    );
+    await this.putWalletLedgerEntry(ctx, buyerLedgerEntry);
+    await this.putWalletLedgerEntry(ctx, sellerLedgerEntry);
+    await ctx.stub.putState(
+      this.getListingKey(ctx, listingId),
+      Buffer.from(JSON.stringify(soldListing)),
+    );
+    await ctx.stub.putState(
+      this.getTransactionKey(ctx, transactionId),
+      Buffer.from(JSON.stringify(transaction)),
+    );
+    await ctx.stub.putState(
+      this.getUserTransactionKey(ctx, transaction.sellerId, transactionId),
+      Buffer.from(transactionId),
+    );
+    await ctx.stub.putState(
+      this.getUserTransactionKey(ctx, transaction.buyerId, transactionId),
+      Buffer.from(transactionId),
+    );
+    await ctx.stub.putState(
+      settlementKey,
+      Buffer.from(JSON.stringify(receipt)),
+    );
+
+    return JSON.stringify(receipt);
+  }
+
+  @Transaction(false)
+  @Returns("string")
+  public async ReadSettlement(
+    ctx: Context,
+    transactionId: string,
+  ): Promise<string> {
+    this.requireBackendService(ctx);
+    this.requireIdentifier("transactionId", transactionId);
+
+    const state = await ctx.stub.getState(
+      this.getWalletSettlementKey(ctx, transactionId),
+    );
+    if (state.length === 0) {
+      throw new Error(
+        `Settlement for transaction ${transactionId} does not exist`,
+      );
+    }
+
+    return state.toString();
   }
 
   @Transaction()
@@ -264,7 +1057,10 @@ export class EnergyMarketContract extends Contract {
     return JSON.stringify(cancelledListing);
   }
 
-  /** Records an accepted whole-listing purchase; an identical retry is safe. */
+  /**
+   * Retained as a compatibility-shaped method name, but disabled so a caller
+   * cannot mark an energy sale complete without a token settlement.
+   */
   @Transaction()
   @Returns("string")
   public async CompletePurchaseHandshake(
@@ -275,104 +1071,13 @@ export class EnergyMarketContract extends Contract {
     buyerAssetId: string,
   ): Promise<string> {
     this.requireBackendService(ctx);
-    this.requireNonEmpty("transactionId", transactionId);
-    this.requireNonEmpty("listingId", listingId);
-    this.requireNonEmpty("buyerId", buyerId);
-    this.requireNonEmpty("buyerAssetId", buyerAssetId);
-
-    // The application supplies one stable ID for the accepted handshake.
-    // A retry after a lost commit response must not create another purchase.
-    const existingState = await ctx.stub.getState(
-      this.getTransactionKey(ctx, transactionId),
+    void transactionId;
+    void listingId;
+    void buyerId;
+    void buyerAssetId;
+    throw new Error(
+      "CompletePurchaseHandshake is retired; use SettleEnergyPurchase",
     );
-    if (existingState.length > 0) {
-      const existing = JSON.parse(
-        existingState.toString(),
-      ) as EnergyTransaction;
-      if (
-        existing.schemaVersion !== 2 ||
-        existing.listingId !== listingId ||
-        existing.buyerId !== buyerId ||
-        existing.buyerAssetId !== buyerAssetId
-      ) {
-        throw new Error(
-          "Transaction ID is already used for a different purchase",
-        );
-      }
-      const listing = await this.readListing(
-        ctx,
-        this.getListingKey(ctx, listingId),
-        listingId,
-      );
-      if (
-        listing.status !== "sold" ||
-        listing.transactionId !== transactionId
-      ) {
-        throw new Error("Transaction and listing state are inconsistent");
-      }
-      return JSON.stringify({ listing, transaction: existing });
-    }
-
-    const listing = await this.getActiveListing(ctx, listingId);
-    if (listing.userId === buyerId) {
-      throw new Error("A seller cannot purchase their own listing");
-    }
-    if (listing.assetId === buyerAssetId) {
-      throw new Error(
-        "The receiving battery must differ from the seller's battery",
-      );
-    }
-    const totalTokens = this.calculateTotalTokens(
-      listing.energyKWh,
-      listing.priceTokensPerKWh,
-    );
-    const completedAt = this.getTimestampIso(ctx);
-    const soldListing: EnergyListing = {
-      ...listing,
-      status: "sold",
-      closedAt: completedAt,
-      transactionId,
-    };
-    const transaction: EnergyTransaction = {
-      docType: "energyTransaction",
-      schemaVersion: 2,
-      transactionId,
-      fabricTransactionId: ctx.stub.getTxID(),
-      listingId: listing.listingId,
-      sellerId: listing.userId,
-      buyerId,
-      assetId: listing.assetId,
-      buyerAssetId,
-      energyKWh: listing.energyKWh,
-      priceTokensPerKWh: listing.priceTokensPerKWh,
-      totalTokens,
-      status: "completed",
-      completedAt,
-    };
-    const sellerIndexKey = this.getUserTransactionKey(
-      ctx,
-      transaction.sellerId,
-      transactionId,
-    );
-    const buyerIndexKey = this.getUserTransactionKey(
-      ctx,
-      buyerId,
-      transactionId,
-    );
-
-    await ctx.stub.putState(
-      this.getListingKey(ctx, listingId),
-      Buffer.from(JSON.stringify(soldListing)),
-    );
-    await ctx.stub.putState(
-      this.getTransactionKey(ctx, transaction.transactionId),
-      Buffer.from(JSON.stringify(transaction)),
-    );
-    // Store references, so the completed transaction has one authoritative copy.
-    await ctx.stub.putState(sellerIndexKey, Buffer.from(transactionId));
-    await ctx.stub.putState(buyerIndexKey, Buffer.from(transactionId));
-
-    return JSON.stringify({ listing: soldListing, transaction });
   }
 
   /** Reads a purchase for its buyer or seller, as authenticated by the backend. */
@@ -501,6 +1206,15 @@ export class EnergyMarketContract extends Contract {
     }
   }
 
+  private requireTokenIssuer(ctx: Context): void {
+    this.requireBackendService(ctx);
+    if (
+      !ctx.clientIdentity.assertAttributeValue("energyMarket.issuer", "true")
+    ) {
+      throw new Error("Only the authorised token issuer may issue tokens");
+    }
+  }
+
   private isTransactionParty(
     transaction: EnergyTransaction,
     userId: string,
@@ -548,6 +1262,48 @@ export class EnergyMarketContract extends Contract {
 
   private getTransactionKey(ctx: Context, transactionId: string): string {
     return ctx.stub.createCompositeKey("energyTransaction", [transactionId]);
+  }
+
+  private getWalletKey(ctx: Context, walletId: string): string {
+    return ctx.stub.createCompositeKey("tokenWallet", [walletId]);
+  }
+
+  private getWalletOwnerKey(ctx: Context, ownerUserId: string): string {
+    return ctx.stub.createCompositeKey("tokenWalletByOwner", [ownerUserId]);
+  }
+
+  private getWalletLedgerKey(
+    ctx: Context,
+    walletId: string,
+    entryType: WalletLedgerEntryType,
+    entryId: string,
+  ): string {
+    return ctx.stub.createCompositeKey("tokenWalletLedger", [
+      walletId,
+      entryType,
+      entryId,
+    ]);
+  }
+
+  private getWalletOperationKey(
+    ctx: Context,
+    operation: WalletOperationRecord["operation"],
+    reference: string,
+  ): string {
+    return ctx.stub.createCompositeKey("tokenWalletOperation", [
+      operation,
+      this.digest(reference),
+    ]);
+  }
+
+  private getWalletHoldKey(ctx: Context, holdId: string): string {
+    return ctx.stub.createCompositeKey("tokenWalletHold", [holdId]);
+  }
+
+  private getWalletSettlementKey(ctx: Context, transactionId: string): string {
+    return ctx.stub.createCompositeKey("tokenWalletSettlement", [
+      transactionId,
+    ]);
   }
 
   private getUserTransactionKey(
@@ -609,9 +1365,156 @@ export class EnergyMarketContract extends Contract {
     return JSON.parse(state.toString()) as EnergyListing;
   }
 
+  private async readTokenWallet(
+    ctx: Context,
+    walletId: string,
+  ): Promise<TokenWallet> {
+    const state = await ctx.stub.getState(this.getWalletKey(ctx, walletId));
+
+    if (state.length === 0) {
+      throw new Error(`Wallet ${walletId} does not exist`);
+    }
+
+    return JSON.parse(state.toString()) as TokenWallet;
+  }
+
+  private async getActiveWallet(
+    ctx: Context,
+    walletId: string,
+  ): Promise<TokenWallet> {
+    const wallet = await this.readTokenWallet(ctx, walletId);
+
+    if (wallet.status !== "active") {
+      throw new Error(`Wallet ${walletId} is ${wallet.status}`);
+    }
+
+    return wallet;
+  }
+
+  private toWalletBalance(wallet: TokenWallet) {
+    return {
+      walletId: wallet.walletId,
+      ownerUserId: wallet.ownerUserId,
+      status: wallet.status,
+      availableBalanceTokens: wallet.availableBalanceTokens,
+      heldBalanceTokens: wallet.heldBalanceTokens,
+      totalBalanceTokens: this.addTokenAmounts(
+        wallet.availableBalanceTokens,
+        wallet.heldBalanceTokens,
+      ),
+      updatedAt: wallet.updatedAt,
+    };
+  }
+
+  private buildWalletLedgerEntry(
+    ctx: Context,
+    wallet: TokenWallet,
+    entryType: WalletLedgerEntryType,
+    amountTokens: number,
+    entryId: string,
+    reference: string,
+    sourceWalletId: string | null,
+    destinationWalletId: string | null,
+    transactionId: string | null,
+    listingId: string | null,
+    holdId: string | null,
+    actingRole: string,
+    settlementId: string | null = null,
+  ): WalletLedgerEntry {
+    return {
+      docType: "walletLedgerEntry",
+      entryId,
+      walletId: wallet.walletId,
+      entryType,
+      amountTokens,
+      sourceWalletId,
+      destinationWalletId,
+      transactionId,
+      listingId,
+      holdId,
+      settlementId,
+      reference,
+      actingFabricIdentity: ctx.clientIdentity.getID(),
+      actingRole,
+      fabricTransactionId: ctx.stub.getTxID(),
+      timestamp: wallet.updatedAt,
+      resultingAvailableBalanceTokens: wallet.availableBalanceTokens,
+      resultingHeldBalanceTokens: wallet.heldBalanceTokens,
+    };
+  }
+
+  private async putWalletLedgerEntry(
+    ctx: Context,
+    entry: WalletLedgerEntry,
+  ): Promise<void> {
+    await ctx.stub.putState(
+      this.getWalletLedgerKey(
+        ctx,
+        entry.walletId,
+        entry.entryType,
+        entry.entryId,
+      ),
+      Buffer.from(JSON.stringify(entry)),
+    );
+  }
+
+  private assertSettlementRequestMatches(
+    settlement: WalletSettlementReceipt,
+    request: Pick<
+      WalletSettlementReceipt,
+      | "buyerWalletId"
+      | "sellerWalletId"
+      | "holdId"
+      | "transactionId"
+      | "listingId"
+      | "energyAmountKWh"
+      | "priceTokensPerKWh"
+      | "totalTokens"
+      | "buyerAssetId"
+    >,
+  ): void {
+    const fields: Array<keyof typeof request> = [
+      "buyerWalletId",
+      "sellerWalletId",
+      "holdId",
+      "transactionId",
+      "listingId",
+      "energyAmountKWh",
+      "priceTokensPerKWh",
+      "totalTokens",
+      "buyerAssetId",
+    ];
+
+    for (const field of fields) {
+      if (settlement[field] !== request[field]) {
+        throw new Error("Settlement reference is already used differently");
+      }
+    }
+  }
+
   private requireNonEmpty(fieldName: string, value: string): void {
     if (typeof value !== "string" || value.trim().length === 0) {
       throw new Error(`${fieldName} is required`);
+    }
+  }
+
+  private requireIdentifier(fieldName: string, value: string): void {
+    this.requireNonEmpty(fieldName, value);
+
+    if (
+      value !== value.trim() ||
+      value.length > 256 ||
+      /[\u0000-\u001f\u007f]/u.test(value)
+    ) {
+      throw new Error(`${fieldName} is not a valid identifier`);
+    }
+  }
+
+  private requireReference(fieldName: string, value: string): void {
+    this.requireNonEmpty(fieldName, value);
+
+    if (value.length > 256 || /[\u0000-\u001f\u007f]/u.test(value)) {
+      throw new Error(`${fieldName} is not a valid reference`);
     }
   }
 
@@ -657,6 +1560,35 @@ export class EnergyMarketContract extends Contract {
     }
 
     return parsedValue;
+  }
+
+  private addTokenAmounts(left: number, right: number): number {
+    if (!Number.isSafeInteger(left) || !Number.isSafeInteger(right)) {
+      throw new Error("Token balances must be safe integers");
+    }
+
+    const result = BigInt(left) + BigInt(right);
+    if (result > maxSafeTokenAmount) {
+      throw new Error("Token balance would exceed the safe integer range");
+    }
+
+    return Number(result);
+  }
+
+  private subtractTokenAmounts(left: number, right: number): number {
+    if (
+      !Number.isSafeInteger(left) ||
+      !Number.isSafeInteger(right) ||
+      right > left
+    ) {
+      throw new Error("Token balance cannot become negative");
+    }
+
+    return left - right;
+  }
+
+  private digest(value: string): string {
+    return createHash("sha256").update(value, "utf8").digest("hex");
   }
 
   private parseListingQueryStatus(value: string): ListingQueryStatus {

@@ -27,11 +27,12 @@ T187_capstone-fabric/
 ## Current State
 
 This repository contains the Fabric network setup and energy marketplace chaincode.
-Transaction completion and participant-scoped query APIs are documented in
-[the chaincode README](chaincode/energy-market/README.md). For the 0.3.0 fresh
-ledger baseline and backend handoff, see
+Transaction completion, wallet state, and participant-scoped query APIs are
+documented in [the chaincode README](chaincode/energy-market/README.md). For the
+wallet and backend handoff, see
 [transaction integration](docs/transaction-integration.md).
 The review and planned reset scope are in [Fabric review](docs/fabric-review.md).
+The wallet-specific contract details are in [wallet integration](docs/wallet-integration.md).
 
 It already includes:
 
@@ -88,12 +89,15 @@ bash network/scripts/bootstrapNetwork.sh
 
 The deployed chaincode uses a Platform-only endorsement policy. `AuditOrgMSP`
 approves the chaincode definition and maintains an independent peer for read and
-audit queries, but does not need to endorse normal marketplace writes.
+audit queries, but does not need to endorse normal marketplace writes. The
+backend service identity is enrolled with the test-only
+`energyMarket.issuer=true` attribute so its controlled issuance endpoint can call
+`IssueTokens`.
 
 The planned fresh deployment uses these values in the VM `.env`:
 
 ```text
-FABRIC_CHAINCODE_VERSION=0.3.0
+FABRIC_CHAINCODE_VERSION=0.4.0
 FABRIC_CHAINCODE_SEQUENCE=1
 ```
 
@@ -106,7 +110,8 @@ bash network/scripts/deployChaincode.sh
 ```
 
 The deployment script checks that the target sequence is exactly the next
-sequence (`1` for a new channel). Bootstrap does not erase or reset an old network.
+sequence (`1` for a new channel; `2` when upgrading the currently deployed
+0.3.0 ledger). Bootstrap does not erase or reset an old network.
 
 `git pull` updates source only. It does not create a channel or deploy chaincode.
 Run the lifecycle script after pulling an approved chaincode change.

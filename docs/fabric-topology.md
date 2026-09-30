@@ -11,7 +11,7 @@ This repository starts with a three-organization Fabric network:
 | Identity type               | Org              | Issuing CA    | Purpose                                                                                     |
 | --------------------------- | ---------------- | ------------- | ------------------------------------------------------------------------------------------- |
 | `platformAdmin`             | `PlatformOrgMSP` | `ca-platform` | Administrative actions for the app org                                                      |
-| `backend-service`           | `PlatformOrgMSP` | `ca-platform` | Marketplace writes and user-scoped transaction queries; carries `energyMarket.backend=true` |
+| `backend-service`           | `PlatformOrgMSP` | `ca-platform` | Marketplace writes, wallet queries, and test issuance; carries `energyMarket.backend=true` and `energyMarket.issuer=true` |
 | Normal app users            | `PlatformOrgMSP` | `ca-platform` | Buyers, sellers, and general platform identities                                            |
 | `auditAdmin`                | `AuditOrgMSP`    | `ca-audit`    | Read/query/reporting identities                                                             |
 | `ordererAdmin` / `orderer0` | `OrdererOrgMSP`  | `ca-orderer`  | Ordering service identities                                                                 |

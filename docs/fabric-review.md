@@ -10,7 +10,7 @@ MongoDB and Git remote are untouched by this review.
 | ----------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Users             | `CreateUser`, `DeactivateUser`                                  | Record the application user/enrollment mapping and account lifecycle                         |
 | Listings          | `CreateListing`, `ReadListing`, `ReadListings`, `CancelListing` | Record whole offers, validate quantities/prices/totals, and enforce terminal listing states  |
-| Completion        | `CompletePurchaseHandshake`                                     | Commit the sold listing, immutable transaction and both user-history references together     |
+| Completion        | `SettleEnergyPurchase`                                          | Consume the buyer hold, credit the seller, and commit the sold listing and transaction together |
 | Transaction reads | `ReadTransaction`, `ReadTransactionsForUser`                    | Authenticate the backend service and restrict returned records to the requested buyer/seller |
 | Listing audit     | `GetListingHistory`                                             | Return the listing's ledger history                                                          |
 
@@ -19,13 +19,18 @@ entries, one for each party. Retries use the same application ID and return the
 original record without new writes. History queries use Fabric's native index
 and pagination APIs. There is no global transaction scan or legacy-record adapter.
 
+Wallet state and immutable wallet ledger entries are also authoritative in Fabric.
+Test issuance uses the issuer-authorised backend identity. MongoDB may project
+wallet balances and history, but it cannot authorise a spend or directly change a
+wallet balance.
+
 The backend owns user authentication, account eligibility, battery ownership,
 energy reservations, receiving capacity, pending handshake decisions and expiry.
 `DeactivateUser` records status; it does not revoke a certificate or independently
 block marketplace operations submitted by the shared service identity. The
 backend must enforce that eligibility. Its battery updates must happen exactly
-once after confirmed Fabric commit. No chaincode operation changes physical
-energy or transfers token balances.
+once after confirmed Fabric commit. `SettleEnergyPurchase` transfers the held
+tokens atomically; it does not change physical energy or battery balances.
 
 ## Network and scripts
 
@@ -55,11 +60,11 @@ CA enrollment or successful startup of fresh containers.
 After the scheduled reset, verify the following on the VM before opening writes:
 
 1. Fresh enrollment and backend service attribute; both peers join the channel
-   and commit chaincode version `0.3.0`, sequence `1`.
+  and commit chaincode version `0.4.0`, sequence `1` on a fresh channel.
 2. User creation/deactivation and listing creation/read/filter/cancellation.
 3. One accepted purchase appears in detail and both parties' paginated history;
    another user and an unprivileged Fabric client are denied transaction access.
-4. A repeated completion returns the original record; competing purchases and
+4. A repeated settlement returns the original receipt; competing purchases and
    cancellation/completion races allow only one valid terminal transition.
 5. The application debits/credits batteries once, including after a timeout or
    restart. A cancelled pending handshake releases its reservations.
