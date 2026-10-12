@@ -251,7 +251,7 @@ For an approved source update, connect to the VM and inspect the committed defin
 
     cd ~/code/T187_capstone-fabric
     git pull --ff-only origin main
-    peer lifecycle chaincode querycommitted --channelID energychannel --name energy-market
+    PATH="$HOME/hyperledger/fabric-samples/bin:$PATH" peer lifecycle chaincode querycommitted --channelID energychannel --name energy-market
 
 Set FABRIC_CHAINCODE_VERSION and FABRIC_CHAINCODE_SEQUENCE in the VM's untracked .env for the target package and exact next sequence. Then run:
 

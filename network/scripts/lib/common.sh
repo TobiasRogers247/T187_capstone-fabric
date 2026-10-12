@@ -12,6 +12,14 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
   set +a
 fi
 
+FABRIC_SAMPLES_BIN_DIR="${HOME}/hyperledger/fabric-samples/bin"
+if [[ -d "${FABRIC_SAMPLES_BIN_DIR}" ]]; then
+  case ":${PATH}:" in
+    *":${FABRIC_SAMPLES_BIN_DIR}:"*) ;;
+    *) export PATH="${FABRIC_SAMPLES_BIN_DIR}:${PATH}" ;;
+  esac
+fi
+
 # Compose, channel policies and chaincode use this fixed project topology.
 if [[ "${FABRIC_DOMAIN:-capstone.local}" != "capstone.local" \
   || "${PLATFORM_ORG_MSP:-PlatformOrgMSP}" != "PlatformOrgMSP" \

@@ -159,7 +159,7 @@ package version and sequence `1`, then run:
 
 ```bash
 cd ~/code/T187_capstone-fabric
-peer lifecycle chaincode querycommitted --channelID energychannel --name energy-market
+PATH="$HOME/hyperledger/fabric-samples/bin:$PATH" peer lifecycle chaincode querycommitted --channelID energychannel --name energy-market
 # Set FABRIC_CHAINCODE_VERSION and FABRIC_CHAINCODE_SEQUENCE in the VM .env,
 # then run the lifecycle deployment script.
 bash network/scripts/deployChaincode.sh

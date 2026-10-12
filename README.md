@@ -82,6 +82,8 @@ the generated Platform service identity through `network/scripts/exportBackendEn
 
 On the Fabric VM, copy `.env.example` to `.env` if it does not already exist and
 replace the example CA secrets before running a shared environment.
+The network scripts add `~/hyperledger/fabric-samples/bin` to `PATH` when that
+standard Fabric CLI directory exists.
 
 The first network bootstrap creates generated MSP/TLS material, starts the orderer
 and peers, creates `energychannel`, and deploys `energy-market`:
