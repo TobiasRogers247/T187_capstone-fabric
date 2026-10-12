@@ -1,4 +1,4 @@
-# Fabric wallet integration (0.5.0)
+# Fabric wallet integration (0.5.1)
 
 The `energy-market` chaincode now contains the token wallet used to settle
 whole-energy marketplace trades. Token amounts are positive whole integers,
@@ -58,6 +58,9 @@ the composite key. Fabric's deterministic key order therefore returns history
 in increasing event order, including when timestamps are equal. `ReadWalletHistory`
 arguments are `walletId, pageSize, bookmark`; page size is 1-100 and the returned
 opaque bookmark must be passed unchanged to fetch the next page.
+When Fabric omits pagination metadata, the contract returns an empty bookmark.
+This keeps empty wallet histories readable and projection rebuilds safe before
+the first wallet or transaction exists.
 
 Hold IDs are `hold-` plus the SHA-256 digest of the marketplace transaction ID.
 Settlement IDs are `settlement-` plus the same digest. Issue and hold operation
@@ -148,14 +151,12 @@ pruning.
 
 ## Deployment
 
-The source package version is `0.5.0`. For the agreed fresh-start deployment,
-use chaincode sequence `1`. This contract shape changes the earlier test
-ledger's `CreateUser` signature and wallet-ledger key format; do not treat it as
-an in-place migration. A read-only query on 12 October 2026 confirmed that the
-VM definition is version `0.4.1`, sequence `3`. This differs from the
-fresh-start assumption. Do not reset or migrate the VM ledger without explicit
-approval. On a newly initialized VM, set its untracked `.env` to the
-package version and sequence `1`, then run:
+The source package version is `0.5.1`. A read-only query on 12 October 2026
+confirmed the VM definition is version `0.5.0`, sequence `1`. Version `0.5.1`
+only fixes empty pagination responses, so deploy it as sequence `2` without
+resetting or migrating the ledger. A newly initialized VM uses sequence `1`.
+Set the VM's untracked `.env` to the package version and the correct sequence,
+then run:
 
 ```bash
 cd ~/code/T187_capstone-fabric

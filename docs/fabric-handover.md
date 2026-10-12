@@ -2,7 +2,7 @@
 
 This guide explains how Hyperledger Fabric supports the Kanavoogle capstone. Use this guide to understand the network, certificate authorities, user identities, wallets, token issuance, energy listings, trade settlement, and deployment.
 
-The repository source was reviewed on 12 October 2026. The chaincode package version is 0.5.0. The agreed target is a fresh channel and ledger at chaincode sequence 1. A read-only query on the VM on 12 October confirmed version 0.4.1 at sequence 3. The source changes the CreateUser signature and wallet ledger key and state formats. Do not deploy this fresh-start source over the existing VM ledger without an approved migration or reset plan.
+The repository source was reviewed on 12 October 2026. The chaincode package version is 0.5.1. A read-only query on the VM on 12 October confirmed version 0.5.0 at sequence 1. Version 0.5.1 fixes empty pagination responses and does not change ledger state formats. Deploy it as sequence 2. A newly initialized channel starts at sequence 1.
 
 ## Architecture and current status
 
@@ -245,7 +245,7 @@ The script reads all Fabric pages before writing. After successful reads and wri
 
 GitHub stores source, scripts, templates, and documentation. The VM stores the running network, ledger, certificates, and runtime configuration. A Git pull does not deploy chaincode.
 
-The agreed target uses a fresh channel and ledger with chaincode sequence 1. The source package version is 0.5.0. A read-only VM query on 12 October confirmed version 0.4.1 at sequence 3. Do not deploy the fresh-start contract to this ledger as an in-place upgrade. Do not reset or migrate the VM ledger without explicit approval.
+The current VM definition is version 0.5.0 at sequence 1. The source package version is 0.5.1. This patch only handles empty pagination metadata and does not require a ledger migration or reset. Deploy the update at sequence 2 after confirming the live committed definition. A newly initialized channel starts at sequence 1.
 
 For an approved source update, connect to the VM and inspect the committed definition:
 

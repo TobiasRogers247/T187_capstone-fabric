@@ -426,7 +426,7 @@ export class EnergyMarketContract extends Contract {
     const page: WalletHistoryPage = {
       walletId,
       entries,
-      bookmark: metadata.bookmark,
+      bookmark: metadata?.bookmark ?? "",
     };
     return JSON.stringify(page);
   }
@@ -468,7 +468,7 @@ export class EnergyMarketContract extends Contract {
 
     const page: WalletCollectionPage = {
       wallets,
-      bookmark: metadata.bookmark,
+      bookmark: metadata?.bookmark ?? "",
     };
     return JSON.stringify(page);
   }
@@ -1303,7 +1303,7 @@ export class EnergyMarketContract extends Contract {
     } finally {
       await iterator.close();
     }
-    return JSON.stringify({ transactions, bookmark: metadata.bookmark });
+    return JSON.stringify({ transactions, bookmark: metadata?.bookmark ?? "" });
   }
 
   /** Backend-only, paginated source for rebuilding MongoDB transaction projections. */
@@ -1345,7 +1345,7 @@ export class EnergyMarketContract extends Contract {
 
     const page: TransactionCollectionPage = {
       transactions,
-      bookmark: metadata.bookmark,
+      bookmark: metadata?.bookmark ?? "",
     };
     return JSON.stringify(page);
   }

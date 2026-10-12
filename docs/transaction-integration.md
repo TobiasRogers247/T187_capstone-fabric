@@ -1,4 +1,4 @@
-# Fabric transaction integration (0.5.0)
+# Fabric transaction integration (0.5.1)
 
 This document describes the application-facing boundary for the Fabric
 `EnergyMarketContract`. The contract now owns token wallet value and the
@@ -8,14 +8,14 @@ wallet balances.
 
 ## Contract version and deployment baseline
 
-The source version is `0.5.0`.
+The source version is `0.5.1`.
 
-- The agreed baseline is a fresh channel/ledger, deployed at chaincode sequence
-  `1`; no application-data or ledger migration is part of this work.
-- Version `0.5.0` changes `CreateUser` and wallet-history key and state formats.
-  Do not apply it as an in-place upgrade to the earlier test ledger. A
-  read-only VM query on 12 October 2026 confirmed definition `0.4.1`, sequence
-  `3`. Do not reset or migrate that ledger without explicit approval.
+- Version `0.5.0` introduced the current user mapping and wallet-history state
+  formats. Version `0.5.1` only handles empty pagination responses and keeps
+  those formats unchanged.
+- A read-only VM query on 12 October 2026 confirmed version `0.5.0`, sequence
+  `1`. Deploy version `0.5.1` as sequence `2`. A newly initialized channel
+  starts at sequence `1`.
 - See the [Fabric handover guide](fabric-handover.md) and
   [wallet integration](wallet-integration.md) for deployment and runtime notes.
 

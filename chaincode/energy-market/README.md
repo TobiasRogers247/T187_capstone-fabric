@@ -6,11 +6,11 @@ wallet entries, final listing status, energy amount, token-unit price, Fabric
 timestamps, and completed settlement records. MongoDB owns UI data and operational
 projections only.
 
-Version 0.5.0 aligns the fresh-start data model: `CreateUser` no longer accepts
-legacy cents, wallet history uses per-wallet chronological sequences, and
-backend-only paginated reads support rebuilding wallet and completed-trade
-projections. This contract shape is intended for a fresh channel/ledger, not as
-an in-place migration of the earlier test ledger.
+Version 0.5.1 keeps the 0.5.0 data model and returns an empty bookmark when
+Fabric omits pagination metadata for empty result pages. Version 0.5.0 removed
+legacy cents from `CreateUser`, added per-wallet chronological history, and
+added backend-only paginated reads for projection rebuilding. Version 0.5.1
+does not change ledger state formats.
 
 ## Listing State
 

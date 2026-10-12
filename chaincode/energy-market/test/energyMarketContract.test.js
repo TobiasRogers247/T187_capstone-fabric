@@ -28,6 +28,7 @@ class MockStub {
     this.versions = new Map();
     this.history = new Map();
     this.transactionNumber = 0;
+    this.omitPaginationMetadata = false;
   }
 
   createCompositeKey(objectType, attributes) {
@@ -101,12 +102,15 @@ class MockStub {
     const page = entries.slice(start, start + pageSize);
     const hasMore = start + page.length < entries.length;
 
-    return {
+    const result = {
       iterator: new MockIterator(page),
-      metadata: {
-        bookmark: hasMore ? page[page.length - 1].key : "",
-      },
     };
+    if (!this.omitPaginationMetadata) {
+      result.metadata = {
+        bookmark: hasMore ? page[page.length - 1].key : "",
+      };
+    }
+    return result;
   }
 }
 
@@ -760,6 +764,43 @@ test("paginates every wallet and completed transaction for projection rebuilds",
     "purchase-rebuild",
   );
   assert.equal(transactionPage.bookmark, "");
+});
+
+test("returns empty bookmarks when Fabric omits pagination metadata", async () => {
+  const contract = new EnergyMarketContract();
+  const ctx = createContext();
+  ctx.stub.omitPaginationMetadata = true;
+  const emptyWallets = JSON.parse(await contract.ReadWallets(ctx, "10", ""));
+  const wallet = await createUserAndWallet(
+    contract,
+    ctx,
+    "empty-page-user",
+    "wallet-empty-page-user",
+  );
+  const walletHistory = JSON.parse(
+    await contract.ReadWalletHistory(ctx, wallet.walletId, "10", ""),
+  );
+  const wallets = JSON.parse(await contract.ReadWallets(ctx, "10", ""));
+  const userTransactions = JSON.parse(
+    await contract.ReadTransactionsForUser(ctx, "empty-page-user", "10", ""),
+  );
+  const transactions = JSON.parse(
+    await contract.ReadAllTransactions(ctx, "10", ""),
+  );
+
+  assert.deepEqual(walletHistory.entries, []);
+  assert.equal(walletHistory.bookmark, "");
+  assert.deepEqual(emptyWallets.wallets, []);
+  assert.equal(emptyWallets.bookmark, "");
+  assert.deepEqual(
+    wallets.wallets.map(({ walletId }) => walletId),
+    [wallet.walletId],
+  );
+  assert.equal(wallets.bookmark, "");
+  assert.deepEqual(userTransactions.transactions, []);
+  assert.equal(userTransactions.bookmark, "");
+  assert.deepEqual(transactions.transactions, []);
+  assert.equal(transactions.bookmark, "");
 });
 
 test("restricts projection rebuild reads to the authorised backend identity", async () => {
