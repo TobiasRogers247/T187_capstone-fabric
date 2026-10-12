@@ -28,6 +28,8 @@ tmp/
 temp/
 node_modules/
 chaincode/**/dist/
+docs/fabric-handover.docx
+docs/fabric-handover-assets/
 
 # OS/editor noise
 .DS_Store

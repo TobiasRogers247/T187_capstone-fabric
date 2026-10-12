@@ -6,7 +6,7 @@ The repository source was reviewed on 12 October 2026. The chaincode package ver
 
 ## Architecture and current status
 
-![Fabric architecture across the application, certificate authorities, peers, orderer, chaincode, and MongoDB projections.](fabric-handover-assets/system-overview.svg){ width=95% }
+Diagram: Fabric architecture across the application, certificate authorities, peers, orderer, chaincode, and MongoDB projections. The diagram remains a local handover asset and is not stored in GitHub.
 
 The frontend calls the Express API. The frontend does not connect to Fabric. The backend connects through Fabric Gateway and signs application transactions with the Platform backend service identity.
 
@@ -35,7 +35,7 @@ Current application integration:
 
 ## Certificate authorities and user identity
 
-![User registration and identity lifecycle from application signup through Platform CA enrollment and CreateUser.](fabric-handover-assets/identity-lifecycle.svg){ width=95% }
+Diagram: User registration and identity lifecycle from application signup through Platform CA enrollment and CreateUser. The diagram remains a local handover asset and is not stored in GitHub.
 
 The application registration route is POST /api/auth/register. The backend creates the application account, then registers and enrolls a Platform CA identity. The enrollment ID follows this format:
 
@@ -71,7 +71,7 @@ bootstrapNetwork.sh starts the Fabric services, creates the channel, and deploys
 
 ## Wallets and test token issuance
 
-![Wallet read and test issuance flow. The frontend sends an authenticated issue request without an amount. The backend applies the issuance policy and chaincode checks issuer authorization.](fabric-handover-assets/wallet-lifecycle.svg){ width=95% }
+Diagram: Wallet read and test issuance flow. The frontend sends an authenticated issue request without an amount. The backend applies the issuance policy and chaincode checks issuer authorization. The diagram remains a local handover asset and is not stored in GitHub.
 
 Fabric stores one wallet per active application user. The backend derives the wallet ID as wallet-<application-user-ID>. Chaincode stores these fields:
 
@@ -128,7 +128,7 @@ Hold IDs use hold- followed by the SHA-256 digest of the marketplace transaction
 
 ## Energy listings
 
-![Listing lifecycle from API validation through Fabric writes and reads to MongoDB projection updates.](fabric-handover-assets/listing-lifecycle.svg){ width=95% }
+Diagram: Listing lifecycle from API validation through Fabric writes and reads to MongoDB projection updates. The diagram remains a local handover asset and is not stored in GitHub.
 
 Energy quantities use kWh. Prices use whole tokens per kWh. Fabric does not store AUD values or currency conversions.
 
@@ -154,7 +154,7 @@ ReadListings with status active omits a listing with an active token reservation
 
 ## Marketplace transaction and token settlement
 
-![Planned purchase settlement sequence. Seller acceptance precedes the token hold. Fabric consumes the matching hold and reservation, transfers tokens, and records a receipt.](fabric-handover-assets/purchase-settlement.svg){ width=95% }
+Diagram: Planned purchase settlement sequence. Seller acceptance precedes the token hold. Fabric consumes the matching hold and reservation, transfers tokens, and records a receipt. The diagram remains a local handover asset and is not stored in GitHub.
 
 Fabric supports token settlement. The application does not yet call the settlement transactions. MongoDB transaction records do not prove a Fabric token transfer.
 
