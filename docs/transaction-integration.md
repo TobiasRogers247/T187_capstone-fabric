@@ -1,4 +1,4 @@
-# Fabric transaction integration (0.4.1)
+# Fabric transaction integration (0.5.0)
 
 This document describes the application-facing boundary for the Fabric
 `EnergyMarketContract`. The contract now owns token wallet value and the
@@ -8,13 +8,16 @@ wallet balances.
 
 ## Contract version and deployment baseline
 
-The source version is `0.4.1`.
+The source version is `0.5.0`.
 
-- A fresh channel deployment uses chaincode sequence `1`.
-- The current VM channel runs `0.4.0` at sequence `2`; it must install the
-  `0.4.1` package and approve/commit it as sequence `3`.
-- The full deployment notes and current VM state are in
-  [`docs/wallet-integration.md`](wallet-integration.md).
+- The agreed baseline is a fresh channel/ledger, deployed at chaincode sequence
+  `1`; no application-data or ledger migration is part of this work.
+- Version `0.5.0` changes `CreateUser` and wallet-history key and state formats.
+  Do not apply it as an in-place upgrade to the earlier test ledger. A
+  read-only VM query on 12 October 2026 confirmed definition `0.4.1`, sequence
+  `3`. Do not reset or migrate that ledger without explicit approval.
+- See the [Fabric handover guide](fabric-handover.md) and
+  [wallet integration](wallet-integration.md) for deployment and runtime notes.
 
 Do not commit generated packages, certificates, private keys, or runtime
 artifacts.
@@ -24,21 +27,23 @@ artifacts.
 All arguments are strings at the Fabric Gateway boundary. Numeric token
 amounts are whole, positive, safe integers and are validated by chaincode.
 
-| Transaction | Arguments | Purpose |
-| --- | --- | --- |
-| `CreateWallet` | `walletId, ownerUserId, ownerFabricEnrollmentId, ownerMspId` | Create the single wallet mapped to an application user. |
-| `ReadWallet` | `walletId` | Read the wallet summary. |
-| `ReadWalletByOwner` | `ownerUserId` | Read the mapped wallet. |
-| `ReadWalletBalance` | `walletId` | Read available, held, and derived total tokens. |
-| `ReadWalletHistory` | `walletId, pageSize, bookmark, entryType` | Read immutable wallet entries with deterministic pagination. |
-| `IssueTokens` | `walletId, amountTokens, reference` | Test-environment issuance by the authorised issuer identity. |
-| `HoldTokens` | `walletId, amountTokens, transactionId, listingId, idempotencyKey` | Move available tokens into an active hold before purchase acceptance. |
-| `SettleEnergyPurchase` | `buyerWalletId, sellerWalletId, holdId, transactionId, listingId, energyAmountKWh, priceTokensPerKWh, totalTokens, buyerAssetId` | Consume the buyer hold, credit the seller, and complete the energy transaction atomically. |
-| `ReadSettlement` | `transactionId` | Look up an existing settlement receipt before retrying an unknown request. |
-| `ReadTransaction` | `transactionId, requestingUserId` | Read a completed energy transaction for its buyer or seller. |
-| `ReadTransactionsForUser` | `requestingUserId, pageSize, bookmark` | Read completed transactions for a user. |
-| `ReadListing` | `listingId` | Read one listing. |
-| `ReadListings` | `status` | Read listings filtered by `active`, `cancelled`, `sold`, or `all`. |
+| Transaction               | Arguments                                                                                                                        | Purpose                                                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `CreateWallet`            | `walletId, ownerUserId, ownerFabricEnrollmentId, ownerMspId`                                                                     | Create the single wallet mapped to an application user.                                                                  |
+| `ReadWallet`              | `walletId`                                                                                                                       | Read the wallet summary.                                                                                                 |
+| `ReadWalletByOwner`       | `ownerUserId`                                                                                                                    | Read the mapped wallet.                                                                                                  |
+| `ReadWalletBalance`       | `walletId`                                                                                                                       | Read available, held, and derived total tokens.                                                                          |
+| `ReadWalletHistory`       | `walletId, pageSize, bookmark`                                                                                                   | Read immutable wallet entries in ascending per-wallet sequence order.                                                    |
+| `ReadWallets`             | `pageSize, bookmark`                                                                                                             | Backend-only paginated wallet source for rebuilding the Mongo projection.                                                |
+| `IssueTokens`             | `walletId, amountTokens, reference`                                                                                              | Test-environment issuance by the authorised issuer identity.                                                             |
+| `HoldTokens`              | `walletId, amountTokens, transactionId, listingId, idempotencyKey`                                                               | After seller acceptance, move available tokens into a hold and atomically claim the listing before immediate settlement. |
+| `SettleEnergyPurchase`    | `buyerWalletId, sellerWalletId, holdId, transactionId, listingId, energyAmountKWh, priceTokensPerKWh, totalTokens, buyerAssetId` | Consume the buyer hold, credit the seller, and complete the energy transaction atomically.                               |
+| `ReadSettlement`          | `transactionId`                                                                                                                  | Look up an existing settlement receipt before retrying an unknown request.                                               |
+| `ReadTransaction`         | `transactionId, requestingUserId`                                                                                                | Read a completed energy transaction for its buyer or seller.                                                             |
+| `ReadTransactionsForUser` | `requestingUserId, pageSize, bookmark`                                                                                           | Read completed transactions for a user.                                                                                  |
+| `ReadAllTransactions`     | `pageSize, bookmark`                                                                                                             | Backend-only paginated completed-trade source for rebuilding the Mongo projection.                                       |
+| `ReadListing`             | `listingId`                                                                                                                      | Read one listing.                                                                                                        |
+| `ReadListings`            | `status`                                                                                                                         | Read listings filtered by `active`, `cancelled`, `sold`, or `all`.                                                       |
 
 `CompletePurchaseHandshake` remains only as a compatibility-shaped transaction
 name and is deliberately rejected. Application code must use
@@ -66,24 +71,44 @@ buyer IDs, or balances from the browser.
 
 ## Application adapter behavior
 
-The backend Fabric adapter should:
+The intended backend Fabric adapter behavior is:
 
 1. Create or read the user wallet through the contract.
 2. Use `ReadWallet` or `ReadWalletByOwner` for the frontend wallet display.
 3. Call `IssueTokens` for the test-only token button with a deterministic
    development reference.
-4. Validate the listing, seller, kWh amount, price, and total before calling
-   `HoldTokens`.
-5. Treat a successful hold as the funded purchase state.
-6. Call `SettleEnergyPurchase` only after the seller accepts and the terms are
-   unchanged.
-7. Project the returned wallet/settlement data to MongoDB only after Fabric
+4. After seller acceptance, validate the listing, seller, kWh amount, price,
+   and total; then call `HoldTokens` and immediately call
+   `SettleEnergyPurchase` with the same validated terms.
+5. Project the returned wallet/settlement data to MongoDB only after Fabric
    confirms the transaction.
 
 Never retry `IssueTokens`, `HoldTokens`, or `SettleEnergyPurchase` blindly.
 The reference/idempotency keys make duplicate requests safe, but an unknown
 submission result must first be checked with `ReadSettlement` (and the
 relevant wallet/hold read) before another money-changing submission.
+
+`HoldTokens` creates one deterministic reservation per listing in the same
+transaction as the hold. Competing holds for that listing contend on the same
+Fabric key; only one can commit. Settlement consumes that reservation
+atomically. With no `ReleaseHold` operation, do not run parallel purchases for
+the same listing or treat a confirmed hold as cancellable.
+
+**Current application wiring:** wallet reads and test issuance, plus listing
+create/read/cancel, are integrated. Authenticated wallet history is exposed at
+`GET /api/wallet/history`. The backend projection rebuild adapter uses
+`ReadWallets` and `ReadAllTransactions`. The app does not currently call
+`HoldTokens`, `SettleEnergyPurchase`, or `ReadSettlement`; purchase settlement
+remains a contract capability and future integration task.
+
+MongoDB wallet and completed-transaction projections can be repopulated from
+the backend-only paginated Fabric reads. This does not rebuild application user
+profiles, CA credentials, batteries, or other app-owned records. Run
+`npm run backend:db:rebuild:fabric-projections` from the app repository root;
+after all Fabric pages and projection writes succeed, it prunes stale rows only
+from the wallet and transaction projection collections. Pause wallet writes
+during the operation because Fabric pagination is a live view. This is not a
+ledger or application-data migration.
 
 ## Response and failure contract
 

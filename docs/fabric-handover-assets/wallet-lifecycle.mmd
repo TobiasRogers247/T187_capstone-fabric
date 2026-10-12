@@ -1,0 +1,26 @@
+%%{init: {"theme":"base","sequence":{"messageMargin":50,"mirrorActors":false,"noteMargin":20,"actorMargin":65},"themeVariables":{"primaryColor":"#eaf2ff","primaryTextColor":"#14213d","primaryBorderColor":"#4776b8","lineColor":"#52657d","secondaryColor":"#e8f7f1","tertiaryColor":"#fff4df","fontFamily":"Aptos, Segoe UI, sans-serif","fontSize":"20px","actorBkg":"#eaf2ff","actorBorder":"#4776b8","actorTextColor":"#14213d","signalColor":"#52657d","signalTextColor":"#14213d","labelBoxBkgColor":"#fff4df","labelBoxBorderColor":"#c1872f","noteBkgColor":"#fff4df","noteBorderColor":"#c1872f","noteTextColor":"#50370c"}}}%%
+sequenceDiagram
+  autonumber
+  participant UI as Frontend
+  participant API as Backend + Fabric adapter
+  participant CC as Chaincode
+  participant DB as Mongo projection
+
+  UI->>API: GET /api/wallet
+  API->>CC: ReadWalletByOwner via Gateway
+  alt Wallet does not exist
+    API->>CC: CreateUser if needed
+    API->>CC: CreateWallet(walletId, owner)
+    API->>CC: Reread wallet
+  end
+  CC-->>API: Validated wallet result
+  API->>DB: Persist
+  API-->>UI: Return balanceTokens (available)
+
+  UI->>API: POST /api/wallet/issue-tokens
+  Note right of API: Authenticate caller and apply server-side issuance policy
+  API->>CC: IssueTokens(walletId, authorized amount, reference)
+  Note right of CC: Chaincode verifies issuer authorization
+  CC-->>API: Validated issuance receipt
+  API->>DB: Persist
+  API-->>UI: Updated balance

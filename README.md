@@ -31,8 +31,12 @@ Transaction completion, wallet state, and participant-scoped query APIs are
 documented in [the chaincode README](chaincode/energy-market/README.md). For the
 wallet and backend handoff, see
 [transaction integration](docs/transaction-integration.md).
-The review and planned reset scope are in [Fabric review](docs/fabric-review.md).
+An earlier [Fabric review](docs/fabric-review.md) includes reset-preparation
+notes; those are planning notes, not current reset authorization or deployment
+instructions. Use the handover guide below for the current integration status.
 The wallet-specific contract details are in [wallet integration](docs/wallet-integration.md).
+The end-to-end architecture, identity lifecycle, application endpoints, and
+handover/deployment notes are in the [Fabric handover guide](docs/fabric-handover.md).
 
 It already includes:
 
@@ -97,7 +101,7 @@ backend service identity is enrolled with the test-only
 The planned fresh deployment uses these values in the VM `.env`:
 
 ```text
-FABRIC_CHAINCODE_VERSION=0.4.1
+FABRIC_CHAINCODE_VERSION=0.5.0
 FABRIC_CHAINCODE_SEQUENCE=1
 ```
 
@@ -109,9 +113,13 @@ then run:
 bash network/scripts/deployChaincode.sh
 ```
 
-The deployment script checks that the target sequence is exactly the next
-sequence (`1` for a new channel; `2` when upgrading the currently deployed
-0.3.0 ledger). Bootstrap does not erase or reset an old network.
+The deployment script checks that the target sequence is exactly one greater
+than the committed channel sequence. A read-only VM query on 12 October 2026
+confirmed `energy-market` version `0.4.1`, sequence `3`. The current source
+changes the `CreateUser` signature and wallet-ledger key and state formats, so
+it targets a fresh channel at sequence `1`. Do not deploy it over the existing
+VM ledger without an approved migration or reset plan. Bootstrap does not
+erase or reset an old network.
 
 `git pull` updates source only. It does not create a channel or deploy chaincode.
 Run the lifecycle script after pulling an approved chaincode change.

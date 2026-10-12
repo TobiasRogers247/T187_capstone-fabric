@@ -53,7 +53,6 @@ interface UserAccount {
   docType: "userAccount";
   userId: string;
   fabricEnrollmentId: string;
-  balanceCents: number;
   status: UserStatus;
   createdAt: string;
   updatedAt: string;
@@ -76,6 +75,8 @@ interface TokenWallet {
   status: WalletStatus;
   availableBalanceTokens: number;
   heldBalanceTokens: number;
+  lastLedgerSequence: number;
+  lastFabricTransactionId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -83,6 +84,7 @@ interface TokenWallet {
 interface WalletLedgerEntry {
   docType: "walletLedgerEntry";
   entryId: string;
+  sequence: number;
   walletId: string;
   entryType: WalletLedgerEntryType;
   amountTokens: number;
@@ -109,6 +111,18 @@ interface TokenHold {
   transactionId: string;
   listingId: string;
   idempotencyKey: string;
+  status: "active" | "consumed";
+  settlementId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ListingReservation {
+  docType: "energyListingReservation";
+  listingId: string;
+  holdId: string;
+  buyerWalletId: string;
+  transactionId: string;
   status: "active" | "consumed";
   settlementId: string | null;
   createdAt: string;
@@ -169,14 +183,17 @@ interface WalletHistoryPage {
   bookmark: string;
 }
 
-const maxSafeTokenAmount = BigInt(Number.MAX_SAFE_INTEGER);
-const walletLedgerEntryTypes: WalletLedgerEntryType[] = [
-  "issue",
-  "hold",
-  "settlementDebit",
-  "settlementCredit",
-];
+interface WalletCollectionPage {
+  wallets: TokenWallet[];
+  bookmark: string;
+}
 
+interface TransactionCollectionPage {
+  transactions: EnergyTransaction[];
+  bookmark: string;
+}
+
+const maxSafeTokenAmount = BigInt(Number.MAX_SAFE_INTEGER);
 @Info({
   title: "energy-market",
   description:
@@ -189,16 +206,11 @@ export class EnergyMarketContract extends Contract {
     ctx: Context,
     userId: string,
     fabricEnrollmentId: string,
-    initialBalanceCents: string,
   ): Promise<string> {
     this.requireBackendService(ctx);
     this.requireNonEmpty("userId", userId);
     this.requireNonEmpty("fabricEnrollmentId", fabricEnrollmentId);
 
-    const balanceCents = this.parseNonNegativeInteger(
-      "initialBalanceCents",
-      initialBalanceCents,
-    );
     const userKey = this.getUserKey(ctx, userId);
     const existingState = await ctx.stub.getState(userKey);
 
@@ -211,7 +223,6 @@ export class EnergyMarketContract extends Contract {
       docType: "userAccount",
       userId,
       fabricEnrollmentId,
-      balanceCents,
       status: "ACTIVE",
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -314,6 +325,8 @@ export class EnergyMarketContract extends Contract {
       status: "active",
       availableBalanceTokens: 0,
       heldBalanceTokens: 0,
+      lastLedgerSequence: 0,
+      lastFabricTransactionId: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
@@ -374,7 +387,6 @@ export class EnergyMarketContract extends Contract {
     walletId: string,
     pageSize: string,
     bookmark: string,
-    entryType: string = "",
   ): Promise<string> {
     this.requireBackendService(ctx);
     this.requireIdentifier("walletId", walletId);
@@ -387,23 +399,10 @@ export class EnergyMarketContract extends Contract {
     }
 
     await this.readTokenWallet(ctx, walletId);
-    const normalizedEntryType = entryType.trim();
-    if (
-      normalizedEntryType &&
-      !walletLedgerEntryTypes.includes(
-        normalizedEntryType as WalletLedgerEntryType,
-      )
-    ) {
-      throw new Error("entryType is not supported");
-    }
-
-    const attributes = normalizedEntryType
-      ? [walletId, normalizedEntryType]
-      : [walletId];
     const { iterator, metadata } =
       await ctx.stub.getStateByPartialCompositeKeyWithPagination(
         "tokenWalletLedger",
-        attributes,
+        [walletId],
         size,
         bookmark,
       );
@@ -427,6 +426,48 @@ export class EnergyMarketContract extends Contract {
     const page: WalletHistoryPage = {
       walletId,
       entries,
+      bookmark: metadata.bookmark,
+    };
+    return JSON.stringify(page);
+  }
+
+  /** Backend-only, paginated source for rebuilding MongoDB wallet projections. */
+  @Transaction(false)
+  @Returns("string")
+  public async ReadWallets(
+    ctx: Context,
+    pageSize: string,
+    bookmark: string,
+  ): Promise<string> {
+    this.requireBackendService(ctx);
+    const size = this.parsePositiveInteger("pageSize", pageSize);
+    if (size > 100) {
+      throw new Error("pageSize must not exceed 100");
+    }
+    if (typeof bookmark !== "string") {
+      throw new Error("bookmark must be a string");
+    }
+
+    const { iterator, metadata } =
+      await ctx.stub.getStateByPartialCompositeKeyWithPagination(
+        "tokenWallet",
+        [],
+        size,
+        bookmark,
+      );
+    const wallets: TokenWallet[] = [];
+    try {
+      while (true) {
+        const result = await iterator.next();
+        if (result.done) break;
+        wallets.push(JSON.parse(result.value.value.toString()) as TokenWallet);
+      }
+    } finally {
+      await iterator.close();
+    }
+
+    const page: WalletCollectionPage = {
+      wallets,
       bookmark: metadata.bookmark,
     };
     return JSON.stringify(page);
@@ -462,14 +503,18 @@ export class EnergyMarketContract extends Contract {
     }
 
     const wallet = await this.getActiveWallet(ctx, walletId);
-    const updatedWallet: TokenWallet = {
-      ...wallet,
-      availableBalanceTokens: this.addTokenAmounts(
-        wallet.availableBalanceTokens,
-        amount,
-      ),
-      updatedAt: this.getTimestampIso(ctx),
-    };
+    const updatedWallet = this.withLedgerUpdate(
+      ctx,
+      wallet,
+      {
+        availableBalanceTokens: this.addTokenAmounts(
+          wallet.availableBalanceTokens,
+          amount,
+        ),
+        heldBalanceTokens: wallet.heldBalanceTokens,
+      },
+      this.getTimestampIso(ctx),
+    );
     const ledgerEntry = this.buildWalletLedgerEntry(
       ctx,
       updatedWallet,
@@ -585,20 +630,41 @@ export class EnergyMarketContract extends Contract {
     }
 
     await this.getActiveListing(ctx, listingId);
+    const reservationKey = this.getListingReservationKey(ctx, listingId);
+    const existingReservationState = await ctx.stub.getState(reservationKey);
+    if (existingReservationState.length > 0) {
+      const existingReservation = JSON.parse(
+        existingReservationState.toString(),
+      ) as ListingReservation;
+      if (existingReservation.status === "active") {
+        throw new Error(
+          `Listing ${listingId} already has an active token hold`,
+        );
+      }
+
+      throw new Error(`Listing ${listingId} already has a token reservation`);
+    }
+
     const wallet = await this.getActiveWallet(ctx, walletId);
     if (wallet.availableBalanceTokens < amount) {
       throw new Error("Insufficient available token balance");
     }
 
-    const updatedWallet: TokenWallet = {
-      ...wallet,
-      availableBalanceTokens: this.subtractTokenAmounts(
-        wallet.availableBalanceTokens,
-        amount,
-      ),
-      heldBalanceTokens: this.addTokenAmounts(wallet.heldBalanceTokens, amount),
-      updatedAt: this.getTimestampIso(ctx),
-    };
+    const updatedWallet = this.withLedgerUpdate(
+      ctx,
+      wallet,
+      {
+        availableBalanceTokens: this.subtractTokenAmounts(
+          wallet.availableBalanceTokens,
+          amount,
+        ),
+        heldBalanceTokens: this.addTokenAmounts(
+          wallet.heldBalanceTokens,
+          amount,
+        ),
+      },
+      this.getTimestampIso(ctx),
+    );
     const hold: TokenHold = {
       docType: "tokenHold",
       holdId,
@@ -607,6 +673,17 @@ export class EnergyMarketContract extends Contract {
       transactionId,
       listingId,
       idempotencyKey,
+      status: "active",
+      settlementId: null,
+      createdAt: updatedWallet.updatedAt,
+      updatedAt: updatedWallet.updatedAt,
+    };
+    const reservation: ListingReservation = {
+      docType: "energyListingReservation",
+      listingId,
+      holdId,
+      buyerWalletId: walletId,
+      transactionId,
       status: "active",
       settlementId: null,
       createdAt: updatedWallet.updatedAt,
@@ -648,6 +725,12 @@ export class EnergyMarketContract extends Contract {
       Buffer.from(JSON.stringify(updatedWallet)),
     );
     await ctx.stub.putState(holdKey, Buffer.from(JSON.stringify(hold)));
+    // All holds for a listing write the same key. Fabric MVCC validation makes
+    // concurrent competing holds single-winner even if both were endorsed.
+    await ctx.stub.putState(
+      reservationKey,
+      Buffer.from(JSON.stringify(reservation)),
+    );
     await this.putWalletLedgerEntry(ctx, ledgerEntry);
     await ctx.stub.putState(
       operationKey,
@@ -742,6 +825,27 @@ export class EnergyMarketContract extends Contract {
     }
 
     const listing = await this.getActiveListing(ctx, listingId);
+    const reservationState = await ctx.stub.getState(
+      this.getListingReservationKey(ctx, listingId),
+    );
+    if (reservationState.length === 0) {
+      throw new Error(`Listing ${listingId} has no active token reservation`);
+    }
+    const reservation = JSON.parse(
+      reservationState.toString(),
+    ) as ListingReservation;
+    if (
+      reservation.status !== "active" ||
+      reservation.listingId !== listingId ||
+      reservation.holdId !== holdId ||
+      reservation.buyerWalletId !== buyerWalletId ||
+      reservation.transactionId !== transactionId
+    ) {
+      throw new Error(
+        "Settlement does not match the active listing reservation",
+      );
+    }
+
     if (sellerWallet.ownerUserId !== listing.userId) {
       throw new Error("Seller wallet does not own the listing");
     }
@@ -769,22 +873,30 @@ export class EnergyMarketContract extends Contract {
 
     const settlementId = `settlement-${this.digest(transactionId)}`;
     const completedAt = this.getTimestampIso(ctx);
-    const buyerUpdatedWallet: TokenWallet = {
-      ...buyerWallet,
-      heldBalanceTokens: this.subtractTokenAmounts(
-        buyerWallet.heldBalanceTokens,
-        parsedTotalTokens,
-      ),
-      updatedAt: completedAt,
-    };
-    const sellerUpdatedWallet: TokenWallet = {
-      ...sellerWallet,
-      availableBalanceTokens: this.addTokenAmounts(
-        sellerWallet.availableBalanceTokens,
-        parsedTotalTokens,
-      ),
-      updatedAt: completedAt,
-    };
+    const buyerUpdatedWallet = this.withLedgerUpdate(
+      ctx,
+      buyerWallet,
+      {
+        availableBalanceTokens: buyerWallet.availableBalanceTokens,
+        heldBalanceTokens: this.subtractTokenAmounts(
+          buyerWallet.heldBalanceTokens,
+          parsedTotalTokens,
+        ),
+      },
+      completedAt,
+    );
+    const sellerUpdatedWallet = this.withLedgerUpdate(
+      ctx,
+      sellerWallet,
+      {
+        availableBalanceTokens: this.addTokenAmounts(
+          sellerWallet.availableBalanceTokens,
+          parsedTotalTokens,
+        ),
+        heldBalanceTokens: sellerWallet.heldBalanceTokens,
+      },
+      completedAt,
+    );
     const soldListing: EnergyListing = {
       ...listing,
       status: "sold",
@@ -843,6 +955,12 @@ export class EnergyMarketContract extends Contract {
       settlementId,
       updatedAt: completedAt,
     };
+    const consumedReservation: ListingReservation = {
+      ...reservation,
+      status: "consumed",
+      settlementId,
+      updatedAt: completedAt,
+    };
     const receipt: WalletSettlementReceipt = {
       docType: "walletSettlement",
       settlementId,
@@ -877,6 +995,10 @@ export class EnergyMarketContract extends Contract {
     await ctx.stub.putState(
       this.getWalletHoldKey(ctx, holdId),
       Buffer.from(JSON.stringify(consumedHold)),
+    );
+    await ctx.stub.putState(
+      this.getListingReservationKey(ctx, listingId),
+      Buffer.from(JSON.stringify(consumedReservation)),
     );
     await this.putWalletLedgerEntry(ctx, buyerLedgerEntry);
     await this.putWalletLedgerEntry(ctx, sellerLedgerEntry);
@@ -1007,9 +1129,23 @@ export class EnergyMarketContract extends Contract {
           result.value.value.toString(),
         ) as EnergyListing;
 
-        if (queryStatus === "all" || listing.status === queryStatus) {
-          listings.push(listing);
+        if (queryStatus !== "all" && listing.status !== queryStatus) {
+          continue;
         }
+
+        if (queryStatus === "active") {
+          const reservationState = await ctx.stub.getState(
+            this.getListingReservationKey(ctx, listing.listingId),
+          );
+          if (reservationState.length > 0) {
+            const reservation = JSON.parse(
+              reservationState.toString(),
+            ) as ListingReservation;
+            if (reservation.status === "active") continue;
+          }
+        }
+
+        listings.push(listing);
       }
     } finally {
       await iterator.close();
@@ -1043,6 +1179,20 @@ export class EnergyMarketContract extends Contract {
       throw new Error(
         `Listing ${listingId} cannot be cancelled because it is ${listing.status}`,
       );
+    }
+
+    const reservationState = await ctx.stub.getState(
+      this.getListingReservationKey(ctx, listingId),
+    );
+    if (reservationState.length > 0) {
+      const reservation = JSON.parse(
+        reservationState.toString(),
+      ) as ListingReservation;
+      if (reservation.status === "active") {
+        throw new Error(
+          `Listing ${listingId} cannot be cancelled while it has an active token hold`,
+        );
+      }
     }
 
     const cancelledListing: EnergyListing = {
@@ -1156,6 +1306,50 @@ export class EnergyMarketContract extends Contract {
     return JSON.stringify({ transactions, bookmark: metadata.bookmark });
   }
 
+  /** Backend-only, paginated source for rebuilding MongoDB transaction projections. */
+  @Transaction(false)
+  @Returns("string")
+  public async ReadAllTransactions(
+    ctx: Context,
+    pageSize: string,
+    bookmark: string,
+  ): Promise<string> {
+    this.requireBackendService(ctx);
+    const size = this.parsePositiveInteger("pageSize", pageSize);
+    if (size > 100) {
+      throw new Error("pageSize must not exceed 100");
+    }
+    if (typeof bookmark !== "string") {
+      throw new Error("bookmark must be a string");
+    }
+
+    const { iterator, metadata } =
+      await ctx.stub.getStateByPartialCompositeKeyWithPagination(
+        "energyTransaction",
+        [],
+        size,
+        bookmark,
+      );
+    const transactions: EnergyTransaction[] = [];
+    try {
+      while (true) {
+        const result = await iterator.next();
+        if (result.done) break;
+        transactions.push(
+          JSON.parse(result.value.value.toString()) as EnergyTransaction,
+        );
+      }
+    } finally {
+      await iterator.close();
+    }
+
+    const page: TransactionCollectionPage = {
+      transactions,
+      bookmark: metadata.bookmark,
+    };
+    return JSON.stringify(page);
+  }
+
   @Transaction(false)
   @Returns("string")
   public async GetListingHistory(
@@ -1262,6 +1456,10 @@ export class EnergyMarketContract extends Contract {
     return ctx.stub.createCompositeKey("energyListing", [listingId]);
   }
 
+  private getListingReservationKey(ctx: Context, listingId: string): string {
+    return ctx.stub.createCompositeKey("energyListingReservation", [listingId]);
+  }
+
   private getTransactionKey(ctx: Context, transactionId: string): string {
     return ctx.stub.createCompositeKey("energyTransaction", [transactionId]);
   }
@@ -1277,14 +1475,45 @@ export class EnergyMarketContract extends Contract {
   private getWalletLedgerKey(
     ctx: Context,
     walletId: string,
-    entryType: WalletLedgerEntryType,
-    entryId: string,
+    sequence: number,
   ): string {
     return ctx.stub.createCompositeKey("tokenWalletLedger", [
       walletId,
-      entryType,
-      entryId,
+      this.formatLedgerSequence(sequence),
     ]);
+  }
+
+  private formatLedgerSequence(sequence: number): string {
+    if (!Number.isSafeInteger(sequence) || sequence < 1) {
+      throw new Error("Wallet ledger sequence must be a positive safe integer");
+    }
+
+    return String(sequence).padStart(16, "0");
+  }
+
+  private withLedgerUpdate(
+    ctx: Context,
+    wallet: TokenWallet,
+    balances: Pick<TokenWallet, "availableBalanceTokens" | "heldBalanceTokens">,
+    updatedAt: string,
+  ): TokenWallet {
+    if (
+      !Number.isSafeInteger(wallet.lastLedgerSequence) ||
+      wallet.lastLedgerSequence < 0 ||
+      wallet.lastLedgerSequence >= Number.MAX_SAFE_INTEGER
+    ) {
+      throw new Error(
+        "Wallet ledger sequence would exceed the safe integer range",
+      );
+    }
+
+    return {
+      ...wallet,
+      ...balances,
+      lastLedgerSequence: wallet.lastLedgerSequence + 1,
+      lastFabricTransactionId: ctx.stub.getTxID(),
+      updatedAt,
+    };
   }
 
   private getWalletOperationKey(
@@ -1426,6 +1655,7 @@ export class EnergyMarketContract extends Contract {
     return {
       docType: "walletLedgerEntry",
       entryId,
+      sequence: wallet.lastLedgerSequence,
       walletId: wallet.walletId,
       entryType,
       amountTokens,
@@ -1450,12 +1680,7 @@ export class EnergyMarketContract extends Contract {
     entry: WalletLedgerEntry,
   ): Promise<void> {
     await ctx.stub.putState(
-      this.getWalletLedgerKey(
-        ctx,
-        entry.walletId,
-        entry.entryType,
-        entry.entryId,
-      ),
+      this.getWalletLedgerKey(ctx, entry.walletId, entry.sequence),
       Buffer.from(JSON.stringify(entry)),
     );
   }

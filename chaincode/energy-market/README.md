@@ -6,9 +6,11 @@ wallet entries, final listing status, energy amount, token-unit price, Fabric
 timestamps, and completed settlement records. MongoDB owns UI data and operational
 projections only.
 
-Version 0.4.0 added the token wallet and settlement state. Version 0.4.1 adds
-the Fabric transaction ID to issuance receipts and targets a deliberate
-upgrade from 0.4.0.
+Version 0.5.0 aligns the fresh-start data model: `CreateUser` no longer accepts
+legacy cents, wallet history uses per-wallet chronological sequences, and
+backend-only paginated reads support rebuilding wallet and completed-trade
+projections. This contract shape is intended for a fresh channel/ledger, not as
+an in-place migration of the earlier test ledger.
 
 ## Listing State
 
@@ -39,13 +41,14 @@ on-chain pending state.
 
 ## Contract operations
 
-- `CreateUser(userId, fabricEnrollmentId, initialBalanceCents)`
+- `CreateUser(userId, fabricEnrollmentId)`
 - `DeactivateUser(userId)`
 - `CreateWallet(walletId, ownerUserId, ownerFabricEnrollmentId, ownerMspId)`
 - `ReadWallet(walletId)`
 - `ReadWalletByOwner(ownerUserId)`
 - `ReadWalletBalance(walletId)`
-- `ReadWalletHistory(walletId, pageSize, bookmark, entryType)`
+- `ReadWalletHistory(walletId, pageSize, bookmark)`
+- `ReadWallets(pageSize, bookmark)` (backend-only projection rebuild)
 - `IssueTokens(walletId, amountTokens, reference)`
 - `HoldTokens(walletId, amountTokens, transactionId, listingId, idempotencyKey)`
 - `SettleEnergyPurchase(buyerWalletId, sellerWalletId, holdId, transactionId, listingId, energyAmountKWh, priceTokensPerKWh, totalTokens, buyerAssetId)`
@@ -56,6 +59,7 @@ on-chain pending state.
 - `CancelListing(listingId, userId)`
 - `ReadTransaction(transactionId, requestingUserId)`
 - `ReadTransactionsForUser(requestingUserId, pageSize, bookmark)`
+- `ReadAllTransactions(pageSize, bookmark)` (backend-only projection rebuild)
 - `GetListingHistory(listingId)`
 
 `CompletePurchaseHandshake` is retained as a rejected compatibility method. A
@@ -92,19 +96,49 @@ acting Fabric identity and role, Fabric transaction ID, timestamp, and resulting
 available/held values. Those entries can reconstruct the wallet's balance changes;
 MongoDB must treat any wallet document as a projection.
 
+The composite-key formats are deterministic:
+
+```text
+userAccount(userId)
+energyListing(listingId)
+energyTransaction(transactionId)
+energyTransactionByUser(userId, transactionId) -> transactionId
+energyListingReservation(listingId)
+tokenWallet(walletId)
+tokenWalletByOwner(ownerUserId)
+tokenWalletLedger(walletId, zeroPaddedSequence)  # sequence padded to 16 digits
+tokenWalletOperation(operation, sha256(reference))
+tokenWalletHold(holdId)
+tokenWalletSettlement(transactionId)
+```
+
+`HoldTokens` atomically creates the deterministic listing reservation alongside
+the hold and wallet update. The reservation key is unique per listing, so
+competing hold transactions conflict during Fabric MVCC validation. Settlement
+must consume the matching reservation in the same transaction that marks the
+listing sold. Listing cancellation is rejected while a reservation is active.
+There is no release/refund operation in this test scope, so a confirmed hold
+that cannot settle still requires operator reconciliation.
+
+The backend derives wallet IDs as `wallet-<applicationUserId>`. The ledger
+sequence is allocated from the wallet state in the same Fabric transaction as
+the balance change and ledger entry.
+
 `energyKWh` is a positive decimal string when submitted. `priceTokensPerKWh` is a
 positive integer string and must be within JavaScript's safe integer range.
 Creation also checks that the resulting total rounds to a positive, safe integer
 token amount, so an invalid offer fails before it reaches the marketplace.
 
 User account records contain the application user ID, Fabric enrollment ID,
-initial `balanceCents`, account status and lifecycle timestamps. The existing
-`balanceCents` field is separate from marketplace tokens; purchase completion
-does not debit or credit it.
+account status and lifecycle timestamps. Legacy `balanceCents` is not stored
+or used by this contract; token issuance and settlement do not use currency
+fields.
 
 `ReadListing` returns one Fabric listing by ID. `ReadListings` returns the current
 Fabric listings filtered by the requested status; it does not accept `pending`
-because that handshake state remains in MongoDB.
+because that handshake state remains in MongoDB. An `active` listing with an
+active token reservation is omitted from `ReadListings("active")`, although its
+stored listing status remains `active` until settlement marks it sold.
 
 The backend owns the handshake protocol, battery reservations, battery balances,
 and application-user authentication. After acceptance, the backend creates a
@@ -141,7 +175,8 @@ the sold listing and transaction; they do not duplicate the purchase data.
 ### Settle a purchase
 
 After the seller has accepted and the backend has validated the receiving battery,
-call `HoldTokens` followed by `SettleEnergyPurchase`. The settlement arguments are
+call `HoldTokens` and immediately call `SettleEnergyPurchase` using the same
+validated terms. The settlement arguments are
 the buyer wallet, seller wallet, hold ID, application transaction ID, listing ID,
 energy quantity, whole-token price, expected total, and optional buyer battery ID.
 The transaction ID must be allocated and persisted before the first submission.
@@ -184,6 +219,22 @@ in transaction ID order, not chronological order; consumers can sort the complet
 history by `completedAt`. Pagination is a live view, not a frozen snapshot across
 calls. The index is created with new transactions; old test ledgers are outside
 this deployment's supported baseline.
+
+`ReadWalletHistory(walletId, pageSize, bookmark)` returns entries in ascending
+per-wallet sequence. The sequence is allocated atomically with each wallet
+balance change and stored in the immutable entry. The composite key uses a
+zero-padded 16-digit sequence, so Fabric key ordering is chronological for that
+wallet even when multiple entries share a timestamp. The read page is a live
+view; reuse the returned bookmark exactly until it is empty.
+
+`ReadWallets(pageSize, bookmark)` and `ReadAllTransactions(pageSize, bookmark)`
+are backend-service-only reads for rebuilding MongoDB projections. They do not
+expose data to the frontend. Rebuild wallet documents with `availableBalanceTokens`
+mapped to Mongo `balanceTokens`; do not project held or derived total balances
+into the current wallet collection. Rebuild completed transaction documents
+from the Fabric `energyTransaction` records. Application user profiles and
+certificate/private-key material remain app-owned and cannot be rebuilt from
+these contract queries.
 
 ### Access boundary
 

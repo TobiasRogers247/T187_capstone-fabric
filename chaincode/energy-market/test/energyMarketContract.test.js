@@ -25,6 +25,7 @@ class MockIterator {
 class MockStub {
   constructor() {
     this.state = new Map();
+    this.versions = new Map();
     this.history = new Map();
     this.transactionNumber = 0;
   }
@@ -54,6 +55,7 @@ class MockStub {
     this.transactionNumber += 1;
     const stateValue = Buffer.from(value);
     this.state.set(key, stateValue);
+    this.versions.set(key, (this.versions.get(key) ?? 0) + 1);
     const history = this.history.get(key) ?? [];
 
     history.push({
@@ -85,7 +87,10 @@ class MockStub {
     pageSize,
     bookmark,
   ) {
-    const keyPrefix = `\u0000${objectType}\u0000${attributes.join("\u0000")}\u0000`;
+    const attributePrefix = attributes.length
+      ? `${attributes.join("\u0000")}\u0000`
+      : "";
+    const keyPrefix = `\u0000${objectType}\u0000${attributePrefix}`;
     const entries = [...this.state.entries()]
       .filter(([key]) => key.startsWith(keyPrefix))
       .sort(([leftKey], [rightKey]) => leftKey.localeCompare(rightKey))
@@ -105,7 +110,57 @@ class MockStub {
   }
 }
 
-function createContext({ issuer = false } = {}) {
+class TransactionSimulationStub {
+  constructor(parent, transactionId) {
+    this.parent = parent;
+    this.snapshot = new Map(
+      [...parent.state].map(([key, value]) => [key, Buffer.from(value)]),
+    );
+    this.snapshotVersions = new Map(parent.versions);
+    this.readVersions = new Map();
+    this.writeSet = new Map();
+    this.transactionId = transactionId;
+  }
+
+  createCompositeKey(objectType, attributes) {
+    return this.parent.createCompositeKey(objectType, attributes);
+  }
+
+  getTxTimestamp() {
+    return this.parent.getTxTimestamp();
+  }
+
+  getTxID() {
+    return this.transactionId;
+  }
+
+  async getState(key) {
+    if (!this.readVersions.has(key)) {
+      this.readVersions.set(key, this.snapshotVersions.get(key) ?? 0);
+    }
+
+    const value = this.writeSet.get(key) ?? this.snapshot.get(key);
+    return value ? Buffer.from(value) : Buffer.alloc(0);
+  }
+
+  async putState(key, value) {
+    this.writeSet.set(key, Buffer.from(value));
+  }
+
+  async commit() {
+    for (const [key, readVersion] of this.readVersions) {
+      if ((this.parent.versions.get(key) ?? 0) !== readVersion) {
+        throw new Error(`MVCC read conflict on ${key}`);
+      }
+    }
+
+    for (const [key, value] of this.writeSet) {
+      await this.parent.putState(key, value);
+    }
+  }
+}
+
+function createContext({ issuer = false, backend = true } = {}) {
   return {
     stub: new MockStub(),
     clientIdentity: {
@@ -113,14 +168,14 @@ function createContext({ issuer = false } = {}) {
       getID: () => "x509::/CN=backend-service",
       assertAttributeValue: (name, value) =>
         value === "true" &&
-        (name === "energyMarket.backend" ||
+        ((backend && name === "energyMarket.backend") ||
           (issuer && name === "energyMarket.issuer")),
     },
   };
 }
 
 async function createUserAndWallet(contract, ctx, userId, walletId) {
-  await contract.CreateUser(ctx, userId, `enrollment-${userId}`, "0");
+  await contract.CreateUser(ctx, userId, `enrollment-${userId}`);
   return JSON.parse(
     await contract.CreateWallet(
       ctx,
@@ -144,6 +199,19 @@ async function createListing(contract, ctx, listingId = "listing-001") {
     ),
   );
 }
+
+test("CreateUser stores the Fabric identity mapping without legacy cents", async () => {
+  const contract = new EnergyMarketContract();
+  const ctx = createContext();
+  const user = JSON.parse(
+    await contract.CreateUser(ctx, "user-001", "enrollment-user-001"),
+  );
+
+  assert.equal(user.userId, "user-001");
+  assert.equal(user.fabricEnrollmentId, "enrollment-user-001");
+  assert.equal(user.status, "ACTIVE");
+  assert.equal(Object.hasOwn(user, "balanceCents"), false);
+});
 
 test("creates and reads an active whole-energy listing", async () => {
   const contract = new EnergyMarketContract();
@@ -283,7 +351,11 @@ test("settles a listing and transfers held tokens exactly once", async () => {
   );
   assert.equal(buyerAfter.availableBalanceTokens, 62);
   assert.equal(buyerAfter.heldBalanceTokens, 0);
+  assert.equal(buyerAfter.lastLedgerSequence, 3);
+  assert.equal(buyerAfter.lastFabricTransactionId, result.fabricTransactionId);
   assert.equal(sellerAfter.availableBalanceTokens, 38);
+  assert.equal(sellerAfter.lastLedgerSequence, 1);
+  assert.equal(sellerAfter.lastFabricTransactionId, result.fabricTransactionId);
   assert.equal(transaction.listingId, "listing-001");
   assert.equal(transaction.sellerId, "seller-001");
   assert.equal(transaction.buyerId, "buyer-001");
@@ -291,6 +363,182 @@ test("settles a listing and transfers held tokens exactly once", async () => {
   assert.equal(transaction.priceTokensPerKWh, 25);
   assert.equal(transaction.totalTokens, 38);
   assert.equal(transaction.buyerAssetId, "buyer-battery-001");
+
+  const buyerHistory = JSON.parse(
+    await contract.ReadWalletHistory(ctx, buyerWallet.walletId, "10", ""),
+  );
+  assert.deepEqual(
+    buyerHistory.entries.map(({ sequence, entryType }) => [
+      sequence,
+      entryType,
+    ]),
+    [
+      [1, "issue"],
+      [2, "hold"],
+      [3, "settlementDebit"],
+    ],
+  );
+  assert.deepEqual(
+    buyerHistory.entries.map(({ timestamp }) => timestamp),
+    [...buyerHistory.entries.map(({ timestamp }) => timestamp)].sort(),
+  );
+  assert.equal(buyerHistory.entries[1].transactionId, "purchase-001");
+  assert.equal(buyerHistory.entries[2].settlementId, result.settlementId);
+});
+
+test("a listing can have only one active token hold", async () => {
+  const contract = new EnergyMarketContract();
+  const ctx = createContext({ issuer: true });
+  const sellerWallet = await createUserAndWallet(
+    contract,
+    ctx,
+    "seller-001",
+    "wallet-seller-001",
+  );
+  const firstBuyerWallet = await createUserAndWallet(
+    contract,
+    ctx,
+    "buyer-001",
+    "wallet-buyer-001",
+  );
+  const secondBuyerWallet = await createUserAndWallet(
+    contract,
+    ctx,
+    "buyer-002",
+    "wallet-buyer-002",
+  );
+  await contract.IssueTokens(ctx, firstBuyerWallet.walletId, "38", "issue-1");
+  await contract.IssueTokens(ctx, secondBuyerWallet.walletId, "38", "issue-2");
+  await createListing(contract, ctx);
+
+  const firstHold = JSON.parse(
+    await contract.HoldTokens(
+      ctx,
+      firstBuyerWallet.walletId,
+      "38",
+      "purchase-1",
+      "listing-001",
+      "hold-1",
+    ),
+  );
+
+  await assert.rejects(
+    () =>
+      contract.HoldTokens(
+        ctx,
+        secondBuyerWallet.walletId,
+        "38",
+        "purchase-2",
+        "listing-001",
+        "hold-2",
+      ),
+    /already has an active token hold/,
+  );
+  await assert.rejects(
+    () => contract.CancelListing(ctx, "listing-001", "seller-001"),
+    /active token hold/,
+  );
+
+  const secondBuyerAfterRejectedHold = JSON.parse(
+    await contract.ReadWallet(ctx, secondBuyerWallet.walletId),
+  );
+  assert.equal(secondBuyerAfterRejectedHold.availableBalanceTokens, 38);
+  assert.equal(secondBuyerAfterRejectedHold.heldBalanceTokens, 0);
+
+  const reservationKey = ctx.stub.createCompositeKey(
+    "energyListingReservation",
+    ["listing-001"],
+  );
+  const activeReservation = JSON.parse(
+    (await ctx.stub.getState(reservationKey)).toString(),
+  );
+  assert.equal(activeReservation.holdId, firstHold.hold.holdId);
+  assert.equal(activeReservation.buyerWalletId, firstBuyerWallet.walletId);
+  assert.equal(activeReservation.status, "active");
+  assert.deepEqual(JSON.parse(await contract.ReadListings(ctx, "active")), []);
+
+  await contract.SettleEnergyPurchase(
+    ctx,
+    firstBuyerWallet.walletId,
+    sellerWallet.walletId,
+    firstHold.hold.holdId,
+    "purchase-1",
+    "listing-001",
+    "1.5",
+    "25",
+    "38",
+  );
+
+  const consumedReservation = JSON.parse(
+    (await ctx.stub.getState(reservationKey)).toString(),
+  );
+  assert.equal(consumedReservation.status, "consumed");
+  assert.equal(consumedReservation.transactionId, "purchase-1");
+});
+
+test("Fabric MVCC permits only one competing listing reservation to commit", async () => {
+  const contract = new EnergyMarketContract();
+  const ctx = createContext({ issuer: true });
+  const firstBuyerWallet = await createUserAndWallet(
+    contract,
+    ctx,
+    "buyer-001",
+    "wallet-buyer-001",
+  );
+  const secondBuyerWallet = await createUserAndWallet(
+    contract,
+    ctx,
+    "buyer-002",
+    "wallet-buyer-002",
+  );
+  await contract.IssueTokens(ctx, firstBuyerWallet.walletId, "38", "issue-1");
+  await contract.IssueTokens(ctx, secondBuyerWallet.walletId, "38", "issue-2");
+  await createListing(contract, ctx);
+
+  const firstContext = {
+    ...ctx,
+    stub: new TransactionSimulationStub(ctx.stub, "simulated-hold-1"),
+  };
+  const secondContext = {
+    ...ctx,
+    stub: new TransactionSimulationStub(ctx.stub, "simulated-hold-2"),
+  };
+  const [firstReceipt, secondReceipt] = await Promise.all([
+    contract.HoldTokens(
+      firstContext,
+      firstBuyerWallet.walletId,
+      "38",
+      "purchase-1",
+      "listing-001",
+      "hold-1",
+    ),
+    contract.HoldTokens(
+      secondContext,
+      secondBuyerWallet.walletId,
+      "38",
+      "purchase-2",
+      "listing-001",
+      "hold-2",
+    ),
+  ]);
+
+  assert.ok(firstReceipt);
+  assert.ok(secondReceipt);
+  await firstContext.stub.commit();
+  await assert.rejects(
+    () => secondContext.stub.commit(),
+    /MVCC read conflict on .*energyListingReservation/u,
+  );
+
+  const firstBuyerAfterCommit = JSON.parse(
+    await contract.ReadWallet(ctx, firstBuyerWallet.walletId),
+  );
+  const secondBuyerAfterConflict = JSON.parse(
+    await contract.ReadWallet(ctx, secondBuyerWallet.walletId),
+  );
+  assert.equal(firstBuyerAfterCommit.heldBalanceTokens, 38);
+  assert.equal(secondBuyerAfterConflict.availableBalanceTokens, 38);
+  assert.equal(secondBuyerAfterConflict.heldBalanceTokens, 0);
 });
 
 test("creates one wallet per registered user and makes issuance idempotent", async () => {
@@ -323,6 +571,7 @@ test("creates one wallet per registered user and makes issuance idempotent", asy
   assert.equal(issued.wallet.availableBalanceTokens, 100);
   assert.match(issued.fabricTransactionId, /^tx-/u);
   assert.deepEqual(issueRetry, issued);
+  assert.equal(issued.wallet.lastLedgerSequence, 1);
   assert.deepEqual(
     JSON.parse(await contract.ReadWalletByOwner(ctx, "buyer-001")),
     issued.wallet,
@@ -403,6 +652,7 @@ test("requires the issuer attribute, validates amounts, and paginates wallet his
     "listing-001",
     "hold-001",
   );
+  await createListing(contract, issuerContext, "listing-002");
   await assert.rejects(
     () =>
       contract.HoldTokens(
@@ -410,20 +660,14 @@ test("requires the issuer attribute, validates amounts, and paginates wallet his
         wallet.walletId,
         "61",
         "purchase-002",
-        "listing-001",
+        "listing-002",
         "hold-002",
       ),
     /Insufficient available token balance/,
   );
 
   const firstPage = JSON.parse(
-    await contract.ReadWalletHistory(
-      issuerContext,
-      wallet.walletId,
-      "1",
-      "",
-      "",
-    ),
+    await contract.ReadWalletHistory(issuerContext, wallet.walletId, "1", ""),
   );
   const secondPage = JSON.parse(
     await contract.ReadWalletHistory(
@@ -431,11 +675,14 @@ test("requires the issuer attribute, validates amounts, and paginates wallet his
       wallet.walletId,
       "1",
       firstPage.bookmark,
-      "",
     ),
   );
 
   assert.equal(firstPage.entries.length, 1);
+  assert.equal(firstPage.entries[0].sequence, 1);
+  assert.equal(firstPage.entries[0].entryType, "issue");
+  assert.equal(secondPage.entries[0].sequence, 2);
+  assert.equal(secondPage.entries[0].entryType, "hold");
   assert.equal(secondPage.entries.length, 1);
   assert.equal(secondPage.bookmark, "");
   const balance = JSON.parse(
@@ -447,6 +694,86 @@ test("requires the issuer attribute, validates amounts, and paginates wallet his
   assert.equal(balance.availableBalanceTokens, 60);
   assert.equal(balance.heldBalanceTokens, 40);
   assert.equal(balance.totalBalanceTokens, 100);
+});
+
+test("paginates every wallet and completed transaction for projection rebuilds", async () => {
+  const contract = new EnergyMarketContract();
+  const ctx = createContext({ issuer: true });
+  const seller = await createUserAndWallet(
+    contract,
+    ctx,
+    "seller-001",
+    "wallet-seller-001",
+  );
+  const buyer = await createUserAndWallet(
+    contract,
+    ctx,
+    "buyer-001",
+    "wallet-buyer-001",
+  );
+  await contract.IssueTokens(ctx, buyer.walletId, "38", "issue-rebuild");
+  await createListing(contract, ctx);
+  const hold = JSON.parse(
+    await contract.HoldTokens(
+      ctx,
+      buyer.walletId,
+      "38",
+      "purchase-rebuild",
+      "listing-001",
+      "hold-rebuild",
+    ),
+  );
+  await contract.SettleEnergyPurchase(
+    ctx,
+    buyer.walletId,
+    seller.walletId,
+    hold.hold.holdId,
+    "purchase-rebuild",
+    "listing-001",
+    "1.5",
+    "25",
+    "38",
+    "buyer-battery-001",
+  );
+
+  const firstWalletPage = JSON.parse(await contract.ReadWallets(ctx, "1", ""));
+  const secondWalletPage = JSON.parse(
+    await contract.ReadWallets(ctx, "1", firstWalletPage.bookmark),
+  );
+  const transactionPage = JSON.parse(
+    await contract.ReadAllTransactions(ctx, "1", ""),
+  );
+
+  assert.equal(firstWalletPage.wallets.length, 1);
+  assert.equal(secondWalletPage.wallets.length, 1);
+  assert.equal(secondWalletPage.bookmark, "");
+  assert.deepEqual(
+    [
+      firstWalletPage.wallets[0].walletId,
+      secondWalletPage.wallets[0].walletId,
+    ].sort(),
+    [buyer.walletId, seller.walletId].sort(),
+  );
+  assert.equal(transactionPage.transactions.length, 1);
+  assert.equal(
+    transactionPage.transactions[0].transactionId,
+    "purchase-rebuild",
+  );
+  assert.equal(transactionPage.bookmark, "");
+});
+
+test("restricts projection rebuild reads to the authorised backend identity", async () => {
+  const contract = new EnergyMarketContract();
+  const nonBackendContext = createContext({ backend: false });
+
+  await assert.rejects(
+    () => contract.ReadWallets(nonBackendContext, "10", ""),
+    /authorised backend service/u,
+  );
+  await assert.rejects(
+    () => contract.ReadAllTransactions(nonBackendContext, "10", ""),
+    /authorised backend service/u,
+  );
 });
 
 test("rejects value-changing operations for a closed wallet", async () => {

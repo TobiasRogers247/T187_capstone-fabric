@@ -1,0 +1,20 @@
+%%{init: {"theme":"base","sequence":{"messageMargin":50,"mirrorActors":false,"noteMargin":20,"actorMargin":65},"themeVariables":{"primaryColor":"#eaf2ff","primaryTextColor":"#14213d","primaryBorderColor":"#4776b8","lineColor":"#52657d","secondaryColor":"#e8f7f1","tertiaryColor":"#fff4df","fontFamily":"Aptos, Segoe UI, sans-serif","fontSize":"20px","actorBkg":"#eaf2ff","actorBorder":"#4776b8","actorTextColor":"#14213d","signalColor":"#52657d","signalTextColor":"#14213d","labelBoxBkgColor":"#fff4df","labelBoxBorderColor":"#c1872f","noteBkgColor":"#fff4df","noteBorderColor":"#c1872f","noteTextColor":"#50370c"}}}%%
+sequenceDiagram
+  autonumber
+  participant Buyer
+  participant API as Marketplace API (planned)
+  participant Fabric as Chaincode
+  participant Seller
+
+  Buyer->>API: Request listing
+  Seller->>API: Accept request
+  Note right of API: Validate parties, kWh and token terms
+  API->>Fabric: HoldTokens atomically reserves listing
+  API->>Fabric: SettleEnergyPurchase with same terms
+  Note right of Fabric: Consume matching hold and reservation, debit buyer and credit seller
+  Note right of Fabric: Write receipt and complete listing and trade
+  Note right of API: If settlement outcome is unknown, call ReadSettlement before retry
+  Fabric-->>API: Confirmed receipt + Fabric tx ID
+  Note right of API: Project complete/sold only after confirmation
+  API-->>Buyer: Completed result
+  API-->>Seller: Completed result
