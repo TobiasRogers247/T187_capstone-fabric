@@ -254,8 +254,7 @@ privacy. Platform and Audit peer operators hold the shared channel ledger and
 can inspect its data. Hiding records from those organisations would require a
 different storage/privacy design.
 
-See [transaction integration](../../docs/transaction-integration.md)
-for the backend handoff and fresh deployment steps.
+See the [repository README](../../README.md) for setup and deployment.
 
 `expiresAt` remains a MongoDB operational field. When MongoDB determines a listing
 has expired, the backend submits `CancelListing` using the listing owner's user ID.
